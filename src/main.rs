@@ -49,6 +49,13 @@ enum Instruction {
     LSquare(u32),
     RSquare(u32),
 
+    /// Clear the current register:
+    /// ```bf
+    /// [
+    ///     -
+    /// ]
+    /// ```
+    Zero,
     // additional instructions
     /// Add current register value to register at offset, clears the current register.
     /// Equivalent to the following code for `Add(1)`:
@@ -96,6 +103,8 @@ impl std::fmt::Display for Instruction {
             Instruction::Input => write!(f, "in"),
             Instruction::LSquare(_) => write!(f, "["),
             Instruction::RSquare(_) => write!(f, "]"),
+
+            Instruction::Zero => write!(f, "zero"),
             Instruction::Add(i) => write!(f, "<{i}> +="),
             Instruction::Sub(i) => write!(f, "<{i}> -="),
             Instruction::AddMul(i, n) => write!(f, "<{i}> +=*({n})"),
@@ -160,8 +169,30 @@ fn main() {
     );
     print_brainfuck_code(&instructions);
 
-    // arithmetic instructions
     let prev_len = instructions.len();
+    // zero register
+    {
+        use Instruction::*;
+
+        let mut i = 0;
+        while i + 3 < instructions.len() - 3 {
+            let [a, b, c] = &instructions[i..i + 3] else {
+                unreachable!()
+            };
+            match (a, b, c) {
+                (LSquare(_), Dec(1), RSquare(_)) => {
+                    let range = i..i + 3;
+                    println!("replaced {range:?} with zero");
+                    instructions.drain(range);
+                    instructions.insert(i, Zero);
+                }
+                _ => (),
+            }
+
+            i += 1;
+        }
+    }
+    // arithmetic instructions
     {
         use Instruction::*;
 
@@ -195,7 +226,7 @@ fn main() {
             };
 
             let range = i..i + 6;
-            println!("replaced {range:?}");
+            println!("replaced {range:?} with {replacement:?}");
             instructions.drain(range);
             instructions.insert(i, replacement);
 
@@ -261,6 +292,7 @@ fn main() {
                 }
             }
 
+            Instruction::Zero => registers[pointer] = 0,
             Instruction::Add(i) => {
                 let val = registers[pointer];
                 let r = &mut registers[(pointer as isize + i as isize) as usize];
@@ -304,6 +336,7 @@ fn print_brainfuck_code(instructions: &[Instruction]) {
             Instruction::LSquare(_) => println!("["),
             Instruction::RSquare(_) => println!("]"),
 
+            Instruction::Zero => unreachable!(),
             Instruction::Add(_) => unreachable!(),
             Instruction::Sub(_) => unreachable!(),
             Instruction::AddMul(_, _) => unreachable!(),
