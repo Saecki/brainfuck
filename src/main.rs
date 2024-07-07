@@ -58,39 +58,11 @@ enum Instruction {
     /// ]
     /// ```
     Zero,
-    // additional instructions
-    /// Add current register value to register at offset, clears the current register.
-    /// Equivalent to the following code for `Add(1)`:
-    /// ```bf
-    /// [
-    ///     >
-    ///     +
-    ///     <
-    ///     -
-    /// ]
-    /// ```
+    /// Add current register value to register at offset.
     Add(i16),
-    /// Subtract current register value from register at offset, clears the current register.
-    /// Equivalent to the following code for `Sub(1)`:
-    /// ```bf
-    /// [
-    ///     >
-    ///     -
-    ///     <
-    ///     -
-    /// ]
-    /// ```
+    /// Subtract current register value from register at offset.
     Sub(i16),
-    /// Multiply current register value and add to register at offset, clears the current register.
-    /// Equivalent to the following code for `AddMul(1, -5)`:
-    /// ```bf
-    /// [
-    ///     >
-    ///     -----
-    ///     <
-    ///     -
-    /// ]
-    /// ```
+    /// Multiply current register value and add to register at offset.
     AddMul(i16, i16),
 }
 
@@ -258,48 +230,110 @@ fn main() -> ExitCode {
         use Instruction::*;
 
         let mut i = 0;
-        while i + 6 < instructions.len() - 6 {
-            let [a, b, c, d, e, f] = &instructions[i..i + 6] else {
-                unreachable!()
-            };
-            let (offset, inst) = match (a, b, c, d, e, f) {
-                (JumpZ(_), Shr(r), inst, Shl(l), Dec(1), JumpNz(_))
-                | (JumpZ(_), Dec(1), Shr(r), inst, Shl(l), JumpNz(_))
-                    if r == l =>
-                {
-                    (*r as i16, inst)
-                }
-
-                (JumpZ(_), Shl(l), inst, Shr(r), Dec(1), JumpNz(_))
-                | (JumpZ(_), Dec(1), Shl(l), inst, Shr(r), JumpNz(_))
-                    if l == r =>
-                {
-                    (-(*l as i16), inst)
-                }
-
-                _ => {
-                    i += 1;
-                    continue;
-                }
+        'outer: while i < instructions.len() {
+            let JumpZ(_) = instructions[i] else {
+                i += 1;
+                continue 'outer;
             };
 
-            let replacement = match inst {
-                Inc(1) => Add(offset),
-                Dec(1) => Sub(offset),
-                Inc(n) => AddMul(offset, *n as i16),
-                Dec(n) => AddMul(offset, -(*n as i16)),
-                _ => {
-                    i += 1;
-                    continue;
+            let start = i + 1;
+            let mut end = None;
+            for (j, inst) in instructions[start..].iter().enumerate() {
+                match inst {
+                    JumpZ(_) => break,
+                    JumpNz(_) => {
+                        end = Some(start + j);
+                        break;
+                    }
+                    _ => (),
                 }
-            };
-
-            let range = i..i + 6;
-            if verbose >= 2 {
-                println!("replaced {range:?} with {replacement:?}");
             }
-            instructions.drain(range);
-            instructions.insert(i, replacement);
+            let Some(end) = end else {
+                i += 1;
+                continue 'outer;
+            };
+            let inner = &instructions[start..end];
+
+            let mut offset = 0;
+            let mut num_arith = 0;
+            let mut iteration_diff = 0;
+            for inst in inner {
+                match inst {
+                    Shl(n) => offset -= *n as i16,
+                    Shr(n) => offset += *n as i16,
+                    Inc(n) => {
+                        if offset == 0 {
+                            iteration_diff += *n as i16;
+                        } else {
+                            num_arith += 1;
+                        }
+                    }
+                    Dec(n) => {
+                        if offset == 0 {
+                            iteration_diff -= *n as i16;
+                        } else {
+                            num_arith += 1;
+                        }
+                    }
+                    Output
+                    | Input
+                    | JumpZ(_)
+                    | JumpNz(_)
+                    | Zero
+                    | Add(_)
+                    | Sub(_)
+                    | AddMul(_, _) => {
+                        i += 1;
+                        continue 'outer;
+                    }
+                }
+            }
+            if offset != 0 || iteration_diff != -1 {
+                i += 1;
+                continue 'outer;
+            }
+
+            let mut offset = 0;
+            let mut replacements = Vec::with_capacity(num_arith + 1);
+            for inst in inner.iter() {
+                match inst {
+                    Shl(n) => offset -= *n as i16,
+                    Shr(n) => offset += *n as i16,
+                    Inc(n) => {
+                        if offset != 0 {
+                            let replacement = match n {
+                                1 => Add(offset),
+                                _ => AddMul(offset, *n as i16),
+                            };
+                            replacements.push(replacement);
+                        }
+                    }
+                    Dec(n) => {
+                        if offset != 0 {
+                            let replacement = match n {
+                                1 => Sub(offset),
+                                _ => AddMul(offset, -(*n as i16)),
+                            };
+                            replacements.push(replacement);
+                        }
+                    }
+                    Output
+                    | Input
+                    | JumpZ(_)
+                    | JumpNz(_)
+                    | Zero
+                    | Add(_)
+                    | Sub(_)
+                    | AddMul(_, _) => unreachable!(),
+                }
+            }
+            replacements.push(Zero);
+
+            let range = start - 1..end + 1;
+            if verbose >= 2 {
+                println!("replaced {range:?} with {replacements:?}");
+            }
+            _ = instructions.splice(range, replacements);
 
             i += 1;
         }
@@ -382,19 +416,16 @@ fn main() -> ExitCode {
                 let val = registers[pointer];
                 let r = &mut registers[(pointer as isize + i as isize) as usize];
                 *r = r.wrapping_add(val);
-                registers[pointer] = 0;
             }
             Instruction::Sub(i) => {
                 let val = registers[pointer];
                 let r = &mut registers[(pointer as isize + i as isize) as usize];
                 *r = r.wrapping_sub(val);
-                registers[pointer] = 0;
             }
             Instruction::AddMul(i, n) => {
                 let val = n.wrapping_mul(registers[pointer] as i16);
                 let r = &mut registers[(pointer as isize + i as isize) as usize];
                 *r = r.wrapping_add(val as u8);
-                registers[pointer] = 0;
             }
         }
 
