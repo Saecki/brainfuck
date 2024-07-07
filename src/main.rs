@@ -44,12 +44,45 @@ enum Instruction {
     Shr(u16),
     Inc(u8),
     Dec(u8),
-    OffsetInc(i16, u8),
-    OffsetDec(i16, u8),
     Output,
     Input,
     LSquare(u32),
     RSquare(u32),
+
+    // additional instructions
+    /// Add current register value to register at index, clears the current register.
+    /// Equivalent to the following code for `Add(1)`:
+    /// ```bf
+    /// [
+    ///     >
+    ///     +
+    ///     <
+    ///     -
+    /// ]
+    /// ```
+    Add(i16),
+    /// Subtract current register value from register at index, clears the current register.
+    /// Equivalent to the following code for `Sub(1)`:
+    /// ```bf
+    /// [
+    ///     >
+    ///     -
+    ///     <
+    ///     -
+    /// ]
+    /// ```
+    Sub(i16),
+    /// Multiply current register value and add to other register, clears the current register.
+    /// Equivalent to the following code for `AddMul(1, -5)`:
+    /// ```bf
+    /// [
+    ///     >
+    ///     -----
+    ///     <
+    ///     -
+    /// ]
+    /// ```
+    AddMul(i16, i16),
 }
 
 impl std::fmt::Display for Instruction {
@@ -59,12 +92,13 @@ impl std::fmt::Display for Instruction {
             Instruction::Shr(n) => write!(f, "> ({n})"),
             Instruction::Inc(n) => write!(f, "+ ({n})"),
             Instruction::Dec(n) => write!(f, "- ({n})"),
-            Instruction::OffsetInc(i, n) => write!(f, "<{i}> + ({n})"),
-            Instruction::OffsetDec(i, n) => write!(f, "<{i}> - ({n})"),
             Instruction::Output => write!(f, "out"),
             Instruction::Input => write!(f, "in"),
             Instruction::LSquare(_) => write!(f, "["),
             Instruction::RSquare(_) => write!(f, "]"),
+            Instruction::Add(i) => write!(f, "<{i}> +="),
+            Instruction::Sub(i) => write!(f, "<{i}> -="),
+            Instruction::AddMul(i, n) => write!(f, "<{i}> +=*({n})"),
         }
     }
 }
@@ -124,70 +158,46 @@ fn main() {
         instructions.len(),
         100.0 * instructions.len() as f32 / tokens.len() as f32,
     );
+    print_brainfuck_code(&instructions);
 
-    let mut indent = 0;
-    for i in instructions.iter() {
-        if let Instruction::RSquare(_) = i {
-            indent -= 1
-        }
-        for _ in 0..indent {
-            print!("    ");
-        }
-        match i {
-            Instruction::Shl(n) => println!("{:<<width$}", "", width=*n as usize),
-            Instruction::Shr(n) => println!("{:><width$}", "", width=*n as usize),
-            Instruction::Inc(n) => println!("{:+<width$}", "", width=*n as usize),
-            Instruction::Dec(n) => println!("{:-<width$}", "", width=*n as usize),
-            Instruction::OffsetInc(_, _) => unreachable!(),
-            Instruction::OffsetDec(_, _) => unreachable!(),
-            Instruction::Output => println!("."),
-            Instruction::Input => println!(","),
-            Instruction::LSquare(_) => println!("["),
-            Instruction::RSquare(_) => println!("]"),
-        }
-        if let Instruction::LSquare(_) = i {
-            indent += 1
-        }
-    }
-
-
-    // offset instructions
+    // arithmetic instructions
     let prev_len = instructions.len();
     {
+        use Instruction::*;
+
         let mut i = 0;
-        while i + 3 < instructions.len() - 3 {
-            let [a, b, c] = &instructions[i..i + 3] else {
+        while i + 6 < instructions.len() - 6 {
+            let [a, b, c, d, e, f] = &instructions[i..i + 6] else {
                 unreachable!()
             };
-            match (a, b, c) {
-                (Instruction::Shl(l), inst, Instruction::Shr(r)) if l == r => {
-                    let offset_instruction = match inst {
-                        Instruction::Inc(n) => Instruction::OffsetInc(-(*l as i16), *n),
-                        Instruction::Dec(n) => Instruction::OffsetDec(-(*l as i16), *n),
-                        _ => {
-                            i += 1;
-                            continue;
-                        }
-                    };
-                    instructions.drain(i..i + 3);
-                    instructions.insert(i, offset_instruction);
-                    println!("replaced {i}..{}", i + 3);
+            let (offset, inst) = match (a, b, c, d, e, f) {
+                (LSquare(_), Shr(r), inst, Shl(l), Dec(1), RSquare(_)) if r == l => {
+                    (*r as i16, inst)
                 }
-                (Instruction::Shr(r), inst, Instruction::Shl(l)) if r == l => {
-                    let offset_instruction = match inst {
-                        Instruction::Inc(n) => Instruction::OffsetInc(*l as i16, *n),
-                        Instruction::Dec(n) => Instruction::OffsetDec(*l as i16, *n),
-                        _ => {
-                            i += 1;
-                            continue;
-                        }
-                    };
-                    instructions.drain(i..i + 3);
-                    instructions.insert(i, offset_instruction);
-                    println!("replaced {i}..{}", i + 3);
+                (LSquare(_), Shl(l), inst, Shr(r), Dec(1), RSquare(_)) if l == r => {
+                    (-(*l as i16), inst)
                 }
-                _ => (),
-            }
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+
+            let replacement = match inst {
+                Inc(1) => Add(offset),
+                Dec(1) => Sub(offset),
+                Inc(n) => AddMul(offset, *n as i16),
+                Dec(n) => AddMul(offset, -(*n as i16)),
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+
+            let range = i..i + 6;
+            println!("replaced {range:?}");
+            instructions.drain(range);
+            instructions.insert(i, replacement);
 
             i += 1;
         }
@@ -197,7 +207,7 @@ fn main() {
         "instructions before {} after: {} ({:.3}%)",
         prev_len,
         instructions.len(),
-        100.0 * instructions.len() as f32 / tokens.len() as f32,
+        100.0 * instructions.len() as f32 / prev_len as f32,
     );
 
     // update jump indices
@@ -220,19 +230,7 @@ fn main() {
         unreachable!("mismatched brackets")
     }
 
-    let mut indent = 0;
-    for i in instructions.iter() {
-        if let Instruction::RSquare(_) = i {
-            indent -= 1
-        }
-        for _ in 0..indent {
-            print!("    ");
-        }
-        println!("{i}");
-        if let Instruction::LSquare(_) = i {
-            indent += 1
-        }
-    }
+    print_instructions(&instructions);
 
     loop {
         let Some(b) = instructions.get(ip) else {
@@ -242,14 +240,8 @@ fn main() {
         match *b {
             Instruction::Shl(n) => pointer -= n as usize,
             Instruction::Shr(n) => pointer += n as usize,
-            Instruction::Inc(n) => registers[pointer] += n,
-            Instruction::Dec(n) => registers[pointer] -= n,
-            Instruction::OffsetInc(i, n) => {
-                registers[(pointer as isize + i as isize) as usize] += n
-            }
-            Instruction::OffsetDec(i, n) => {
-                registers[(pointer as isize + i as isize) as usize] -= n
-            }
+            Instruction::Inc(n) => registers[pointer] = registers[pointer].wrapping_add(n),
+            Instruction::Dec(n) => registers[pointer] = registers[pointer].wrapping_sub(n),
             Instruction::Output => {
                 _ = std::io::stdout().write(&registers[pointer..pointer + 1]);
             }
@@ -268,8 +260,72 @@ fn main() {
                     continue;
                 }
             }
+
+            Instruction::Add(i) => {
+                let val = registers[pointer];
+                let r = &mut registers[(pointer as isize + i as isize) as usize];
+                *r = r.wrapping_add(val);
+                registers[pointer] = 0;
+            }
+            Instruction::Sub(i) => {
+                let val = registers[pointer];
+                let r = &mut registers[(pointer as isize + i as isize) as usize];
+                *r = r.wrapping_sub(val);
+                registers[pointer] = 0;
+            }
+            Instruction::AddMul(i, n) => {
+                let val = n.wrapping_mul(registers[pointer] as i16);
+                let r = &mut registers[(pointer as isize + i as isize) as usize];
+                *r = r.wrapping_add(val as u8);
+                registers[pointer] = 0;
+            }
         }
 
         ip += 1;
+    }
+}
+
+fn print_brainfuck_code(instructions: &[Instruction]) {
+    let mut indent = 0;
+    for i in instructions.iter() {
+        if let Instruction::RSquare(_) = i {
+            indent -= 1
+        }
+        for _ in 0..indent {
+            print!("    ");
+        }
+        match i {
+            Instruction::Shl(n) => println!("{:<<width$}", "", width = *n as usize),
+            Instruction::Shr(n) => println!("{:><width$}", "", width = *n as usize),
+            Instruction::Inc(n) => println!("{:+<width$}", "", width = *n as usize),
+            Instruction::Dec(n) => println!("{:-<width$}", "", width = *n as usize),
+            Instruction::Output => println!("."),
+            Instruction::Input => println!(","),
+            Instruction::LSquare(_) => println!("["),
+            Instruction::RSquare(_) => println!("]"),
+
+            Instruction::Add(_) => unreachable!(),
+            Instruction::Sub(_) => unreachable!(),
+            Instruction::AddMul(_, _) => unreachable!(),
+        }
+        if let Instruction::LSquare(_) = i {
+            indent += 1
+        }
+    }
+}
+
+fn print_instructions(instructions: &[Instruction]) {
+    let mut indent = 0;
+    for i in instructions.iter() {
+        if let Instruction::RSquare(_) = i {
+            indent -= 1
+        }
+        for _ in 0..indent {
+            print!("    ");
+        }
+        println!("{i}");
+        if let Instruction::LSquare(_) = i {
+            indent += 1
+        }
     }
 }
