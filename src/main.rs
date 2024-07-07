@@ -119,12 +119,6 @@ fn main() {
     let input = std::fs::read_to_string(&path).unwrap();
     let bytes = input.as_bytes();
 
-    let mut ip = 0;
-
-    const LEN: usize = 30000;
-    let mut pointer: usize = 0;
-    let mut registers: [u8; LEN] = [0; LEN];
-
     let tokens = bytes
         .iter()
         .filter_map(|b| {
@@ -273,6 +267,10 @@ fn main() {
 
     print_instructions(&instructions);
 
+    const LEN: usize = 30000;
+    let mut ip = 0;
+    let mut pointer: usize = 0;
+    let mut registers: [u8; LEN] = [0; LEN];
     loop {
         let Some(b) = instructions.get(ip) else {
             break;
