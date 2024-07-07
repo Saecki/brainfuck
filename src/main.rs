@@ -50,7 +50,7 @@ enum Instruction {
     RSquare(u32),
 
     // additional instructions
-    /// Add current register value to register at index, clears the current register.
+    /// Add current register value to register at offset, clears the current register.
     /// Equivalent to the following code for `Add(1)`:
     /// ```bf
     /// [
@@ -61,7 +61,7 @@ enum Instruction {
     /// ]
     /// ```
     Add(i16),
-    /// Subtract current register value from register at index, clears the current register.
+    /// Subtract current register value from register at offset, clears the current register.
     /// Equivalent to the following code for `Sub(1)`:
     /// ```bf
     /// [
@@ -72,7 +72,7 @@ enum Instruction {
     /// ]
     /// ```
     Sub(i16),
-    /// Multiply current register value and add to other register, clears the current register.
+    /// Multiply current register value and add to register at offset, clears the current register.
     /// Equivalent to the following code for `AddMul(1, -5)`:
     /// ```bf
     /// [
