@@ -29,6 +29,8 @@ enum Instruction {
     Shr(u16),
     Inc(u8),
     Dec(u8),
+    OffsetInc(i16, u8),
+    OffsetDec(i16, u8),
     Output,
     Input,
     LSquare(u32),
@@ -64,6 +66,7 @@ fn main() {
         })
         .collect::<Vec<_>>();
 
+    // combine instructions
     let mut instructions = tokens
         .chunk_by(|a, b| a.is_combinable() && a == b)
         .map(|chunk| match chunk[0] {
@@ -78,6 +81,48 @@ fn main() {
         })
         .collect::<Vec<_>>();
 
+    // offset instructions
+    {
+        let mut i = 0;
+        while i + 3 < instructions.len() - 3 {
+            let [a, b, c] = &instructions[i..i + 3] else {
+                unreachable!()
+            };
+            match (a, b, c) {
+                (Instruction::Shl(l), inst, Instruction::Shr(r)) if l == r => {
+                    let offset_instruction = match inst {
+                        Instruction::Inc(n) => Instruction::OffsetInc(-(*l as i16), *n),
+                        Instruction::Dec(n) => Instruction::OffsetDec(-(*l as i16), *n),
+                        _ => {
+                            i += 1;
+                            continue;
+                        }
+                    };
+                    instructions.drain(i..i + 3);
+                    instructions.insert(i, offset_instruction);
+                    println!("replaced {i}..{}", i + 3);
+                }
+                (Instruction::Shr(r), inst, Instruction::Shl(l)) if r == l => {
+                    let offset_instruction = match inst {
+                        Instruction::Inc(n) => Instruction::OffsetInc(*l as i16, *n),
+                        Instruction::Dec(n) => Instruction::OffsetDec(*l as i16, *n),
+                        _ => {
+                            i += 1;
+                            continue;
+                        }
+                    };
+                    instructions.drain(i..i + 3);
+                    instructions.insert(i, offset_instruction);
+                    println!("replaced {i}..{}", i + 3);
+                }
+                _ => (),
+            }
+
+            i += 1;
+        }
+    }
+
+    // update jump indices
     let mut par_stack = Vec::new();
     for (i, instruction) in instructions.iter_mut().enumerate() {
         match instruction {
@@ -104,6 +149,12 @@ fn main() {
             Instruction::Shr(n) => pointer += n as usize,
             Instruction::Inc(n) => registers[pointer] += n,
             Instruction::Dec(n) => registers[pointer] -= n,
+            Instruction::OffsetInc(i, n) => {
+                registers[(pointer as isize + i as isize) as usize] += n
+            }
+            Instruction::OffsetDec(i, n) => {
+                registers[(pointer as isize + i as isize) as usize] -= n
+            }
             Instruction::Output => {
                 _ = std::io::stdout().write(&registers[pointer..pointer + 1]);
             }
