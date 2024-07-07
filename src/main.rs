@@ -1,6 +1,6 @@
 use std::cmp::PartialOrd;
-use std::env::args;
 use std::io::{Read, Write};
+use std::process::ExitCode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Token {
@@ -114,8 +114,52 @@ impl std::fmt::Display for Instruction {
     }
 }
 
-fn main() {
-    let path = args().skip(1).next().unwrap();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Command {
+    Format,
+    Ir,
+    Run,
+}
+
+fn main() -> ExitCode {
+    let mut args = std::env::args();
+    _ = args.next();
+    let command = match args.next().as_deref() {
+        Some("format") => Command::Format,
+        Some("ir") => Command::Ir,
+        Some("run") => Command::Run,
+        Some(a) => {
+            eprintln!("invalid command: `{a}`");
+            return ExitCode::FAILURE;
+        }
+        None => {
+            eprintln!("missing first positional argument <command>");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut path = None;
+    let mut verbose = false;
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--verbose" => verbose = true,
+            _ if a.starts_with("-") => {
+                eprintln!("unexpected argument `{a}`");
+                return ExitCode::FAILURE;
+            }
+            _ => {
+                if path.is_some() {
+                    eprintln!("unexpected positional argument `{a}`");
+                    return ExitCode::FAILURE;
+                }
+                path = Some(a);
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("missing second positional argument <path>");
+        return ExitCode::FAILURE;
+    };
     let input = std::fs::read_to_string(&path).unwrap();
     let bytes = input.as_bytes();
 
@@ -141,7 +185,7 @@ fn main() {
     let mut instructions = tokens
         .chunk_by(|a, b| a.is_combinable() && a == b)
         .inspect(|c| {
-            if c.len() > 1 {
+            if verbose && c.len() > 1 {
                 println!("combine {}", c.len());
             }
         })
@@ -156,14 +200,22 @@ fn main() {
             Token::RSquare => Instruction::JumpNz(0),
         })
         .collect::<Vec<_>>();
-    println!("========================================");
-    println!(
-        "tokens before {} after: {} ({:.3}%)",
-        tokens.len(),
-        instructions.len(),
-        100.0 * instructions.len() as f32 / tokens.len() as f32,
-    );
-    print_brainfuck_code(&instructions);
+    if verbose {
+        println!("============================================================");
+        println!(
+            "tokens before {} after: {} ({:.3}%)",
+            tokens.len(),
+            instructions.len(),
+            100.0 * instructions.len() as f32 / tokens.len() as f32,
+        );
+        println!("============================================================");
+    }
+    if verbose || command == Command::Format {
+        print_brainfuck_code(&instructions);
+        if command == Command::Format {
+            return ExitCode::SUCCESS;
+        }
+    }
 
     let prev_len = instructions.len();
     // zero register
@@ -178,7 +230,9 @@ fn main() {
             match (a, b, c) {
                 (JumpZ(_), Dec(1), JumpNz(_)) => {
                     let range = i..i + 3;
-                    println!("replaced {range:?} with zero");
+                    if verbose {
+                        println!("replaced {range:?} with zero");
+                    }
                     instructions.drain(range);
                     instructions.insert(i, Zero);
                 }
@@ -230,20 +284,25 @@ fn main() {
             };
 
             let range = i..i + 6;
-            println!("replaced {range:?} with {replacement:?}");
+            if verbose {
+                println!("replaced {range:?} with {replacement:?}");
+            }
             instructions.drain(range);
             instructions.insert(i, replacement);
 
             i += 1;
         }
     }
-    println!("========================================");
-    println!(
-        "instructions before {} after: {} ({:.3}%)",
-        prev_len,
-        instructions.len(),
-        100.0 * instructions.len() as f32 / prev_len as f32,
-    );
+    if verbose {
+        println!("============================================================");
+        println!(
+            "instructions before {} after: {} ({:.3}%)",
+            prev_len,
+            instructions.len(),
+            100.0 * instructions.len() as f32 / prev_len as f32,
+        );
+        println!("============================================================");
+    }
 
     // update jump indices
     let mut par_stack = Vec::new();
@@ -265,7 +324,14 @@ fn main() {
         unreachable!("mismatched brackets")
     }
 
-    print_instructions(&instructions);
+    if verbose || command == Command::Ir {
+        print_instructions(&instructions);
+        if command == Command::Ir {
+            return ExitCode::SUCCESS;
+        } else {
+            println!("============================================================");
+        }
+    }
 
     const LEN: usize = 30000;
     let mut ip = 0;
@@ -323,6 +389,8 @@ fn main() {
 
         ip += 1;
     }
+
+    ExitCode::SUCCESS
 }
 
 fn print_brainfuck_code(instructions: &[Instruction]) {
