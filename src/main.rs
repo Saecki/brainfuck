@@ -46,8 +46,10 @@ enum Instruction {
     Dec(u8),
     Output,
     Input,
-    LSquare(u32),
-    RSquare(u32),
+    /// Jump to the position if the current register value is zero.
+    JumpZ(u32),
+    /// Jump to the position if the current register value is not zero.
+    JumpNz(u32),
 
     /// Clear the current register:
     /// ```bf
@@ -101,8 +103,8 @@ impl std::fmt::Display for Instruction {
             Instruction::Dec(n) => write!(f, "- ({n})"),
             Instruction::Output => write!(f, "out"),
             Instruction::Input => write!(f, "in"),
-            Instruction::LSquare(_) => write!(f, "["),
-            Instruction::RSquare(_) => write!(f, "]"),
+            Instruction::JumpZ(_) => write!(f, "["),
+            Instruction::JumpNz(_) => write!(f, "]"),
 
             Instruction::Zero => write!(f, "zero"),
             Instruction::Add(i) => write!(f, "<{i}> +="),
@@ -156,8 +158,8 @@ fn main() {
             Token::Dec => Instruction::Dec(chunk.len() as u8),
             Token::Output => Instruction::Output,
             Token::Input => Instruction::Input,
-            Token::LSquare => Instruction::LSquare(0),
-            Token::RSquare => Instruction::RSquare(0),
+            Token::LSquare => Instruction::JumpZ(0),
+            Token::RSquare => Instruction::JumpNz(0),
         })
         .collect::<Vec<_>>();
     println!("========================================");
@@ -180,7 +182,7 @@ fn main() {
                 unreachable!()
             };
             match (a, b, c) {
-                (LSquare(_), Dec(1), RSquare(_)) => {
+                (JumpZ(_), Dec(1), JumpNz(_)) => {
                     let range = i..i + 3;
                     println!("replaced {range:?} with zero");
                     instructions.drain(range);
@@ -202,10 +204,8 @@ fn main() {
                 unreachable!()
             };
             let (offset, inst) = match (a, b, c, d, e, f) {
-                (LSquare(_), Shr(r), inst, Shl(l), Dec(1), RSquare(_)) if r == l => {
-                    (*r as i16, inst)
-                }
-                (LSquare(_), Shl(l), inst, Shr(r), Dec(1), RSquare(_)) if l == r => {
+                (JumpZ(_), Shr(r), inst, Shl(l), Dec(1), JumpNz(_)) if r == l => (*r as i16, inst),
+                (JumpZ(_), Shl(l), inst, Shr(r), Dec(1), JumpNz(_)) if l == r => {
                     (-(*l as i16), inst)
                 }
                 _ => {
@@ -245,8 +245,8 @@ fn main() {
     let mut par_stack = Vec::new();
     for (i, instruction) in instructions.iter_mut().enumerate() {
         match instruction {
-            Instruction::LSquare(closing_idx_ref) => par_stack.push((i, closing_idx_ref)),
-            Instruction::RSquare(opening_idx_ref) => {
+            Instruction::JumpZ(closing_idx_ref) => par_stack.push((i, closing_idx_ref)),
+            Instruction::JumpNz(opening_idx_ref) => {
                 let Some((opening_idx, closing_idx_ref)) = par_stack.pop() else {
                     unreachable!("mismatched brackets")
                 };
@@ -279,13 +279,13 @@ fn main() {
             Instruction::Input => {
                 _ = std::io::stdin().read(&mut registers[pointer..pointer + 1]);
             }
-            Instruction::LSquare(idx) => {
+            Instruction::JumpZ(idx) => {
                 if registers[pointer] == 0 {
                     ip = idx as usize;
                     continue;
                 }
             }
-            Instruction::RSquare(idx) => {
+            Instruction::JumpNz(idx) => {
                 if registers[pointer] > 0 {
                     ip = idx as usize;
                     continue;
@@ -320,7 +320,7 @@ fn main() {
 fn print_brainfuck_code(instructions: &[Instruction]) {
     let mut indent = 0;
     for i in instructions.iter() {
-        if let Instruction::RSquare(_) = i {
+        if let Instruction::JumpNz(_) = i {
             indent -= 1
         }
         for _ in 0..indent {
@@ -333,15 +333,15 @@ fn print_brainfuck_code(instructions: &[Instruction]) {
             Instruction::Dec(n) => println!("{:-<width$}", "", width = *n as usize),
             Instruction::Output => println!("."),
             Instruction::Input => println!(","),
-            Instruction::LSquare(_) => println!("["),
-            Instruction::RSquare(_) => println!("]"),
+            Instruction::JumpZ(_) => println!("["),
+            Instruction::JumpNz(_) => println!("]"),
 
             Instruction::Zero => unreachable!(),
             Instruction::Add(_) => unreachable!(),
             Instruction::Sub(_) => unreachable!(),
             Instruction::AddMul(_, _) => unreachable!(),
         }
-        if let Instruction::LSquare(_) = i {
+        if let Instruction::JumpZ(_) = i {
             indent += 1
         }
     }
@@ -350,14 +350,14 @@ fn print_brainfuck_code(instructions: &[Instruction]) {
 fn print_instructions(instructions: &[Instruction]) {
     let mut indent = 0;
     for i in instructions.iter() {
-        if let Instruction::RSquare(_) = i {
+        if let Instruction::JumpNz(_) = i {
             indent -= 1
         }
         for _ in 0..indent {
             print!("    ");
         }
         println!("{i}");
-        if let Instruction::LSquare(_) = i {
+        if let Instruction::JumpZ(_) = i {
             indent += 1
         }
     }
