@@ -204,10 +204,20 @@ fn main() {
                 unreachable!()
             };
             let (offset, inst) = match (a, b, c, d, e, f) {
-                (JumpZ(_), Shr(r), inst, Shl(l), Dec(1), JumpNz(_)) if r == l => (*r as i16, inst),
-                (JumpZ(_), Shl(l), inst, Shr(r), Dec(1), JumpNz(_)) if l == r => {
+                (JumpZ(_), Shr(r), inst, Shl(l), Dec(1), JumpNz(_))
+                | (JumpZ(_), Dec(1), Shr(r), inst, Shl(l), JumpNz(_))
+                    if r == l =>
+                {
+                    (*r as i16, inst)
+                }
+
+                (JumpZ(_), Shl(l), inst, Shr(r), Dec(1), JumpNz(_))
+                | (JumpZ(_), Dec(1), Shl(l), inst, Shr(r), JumpNz(_))
+                    if l == r =>
+                {
                     (-(*l as i16), inst)
                 }
+
                 _ => {
                     i += 1;
                     continue;
