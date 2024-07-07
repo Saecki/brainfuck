@@ -139,21 +139,32 @@ fn main() -> ExitCode {
     };
 
     let mut path = None;
-    let mut verbose = false;
+    let mut verbose = 0;
     while let Some(a) = args.next() {
-        match a.as_str() {
-            "--verbose" => verbose = true,
-            _ if a.starts_with("-") => {
-                eprintln!("unexpected argument `{a}`");
-                return ExitCode::FAILURE;
-            }
-            _ => {
-                if path.is_some() {
-                    eprintln!("unexpected positional argument `{a}`");
+        if let Some(n) = a.strip_prefix("--") {
+            match n {
+                "verbose" => verbose += 1,
+                _ => {
+                    eprintln!("unexpected argument `{a}`");
                     return ExitCode::FAILURE;
                 }
-                path = Some(a);
             }
+        } else if let Some(n) = a.strip_prefix("-") {
+            for c in n.chars() {
+                match c {
+                    'v' => verbose += 1,
+                    _ => {
+                        eprintln!("unexpected flag `{c}`");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+        } else {
+            if path.is_some() {
+                eprintln!("unexpected positional argument `{a}`");
+                return ExitCode::FAILURE;
+            }
+            path = Some(a);
         }
     }
     let Some(path) = path else {
@@ -185,7 +196,7 @@ fn main() -> ExitCode {
     let mut instructions = tokens
         .chunk_by(|a, b| a.is_combinable() && a == b)
         .inspect(|c| {
-            if verbose && c.len() > 1 {
+            if verbose >= 2 && c.len() > 1 {
                 println!("combine {}", c.len());
             }
         })
@@ -200,7 +211,7 @@ fn main() -> ExitCode {
             Token::RSquare => Instruction::JumpNz(0),
         })
         .collect::<Vec<_>>();
-    if verbose {
+    if verbose >= 1 {
         println!("============================================================");
         println!(
             "tokens before {} after: {} ({:.3}%)",
@@ -210,7 +221,7 @@ fn main() -> ExitCode {
         );
         println!("============================================================");
     }
-    if verbose || command == Command::Format {
+    if verbose >= 3 || command == Command::Format {
         print_brainfuck_code(&instructions);
         if command == Command::Format {
             return ExitCode::SUCCESS;
@@ -230,7 +241,7 @@ fn main() -> ExitCode {
             match (a, b, c) {
                 (JumpZ(_), Dec(1), JumpNz(_)) => {
                     let range = i..i + 3;
-                    if verbose {
+                    if verbose >= 2 {
                         println!("replaced {range:?} with zero");
                     }
                     instructions.drain(range);
@@ -284,7 +295,7 @@ fn main() -> ExitCode {
             };
 
             let range = i..i + 6;
-            if verbose {
+            if verbose >= 2 {
                 println!("replaced {range:?} with {replacement:?}");
             }
             instructions.drain(range);
@@ -293,7 +304,7 @@ fn main() -> ExitCode {
             i += 1;
         }
     }
-    if verbose {
+    if verbose >= 1 {
         println!("============================================================");
         println!(
             "instructions before {} after: {} ({:.3}%)",
@@ -324,7 +335,7 @@ fn main() -> ExitCode {
         unreachable!("mismatched brackets")
     }
 
-    if verbose || command == Command::Ir {
+    if verbose >= 3 || command == Command::Ir {
         print_instructions(&instructions);
         if command == Command::Ir {
             return ExitCode::SUCCESS;
