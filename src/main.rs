@@ -216,6 +216,9 @@ fn main() {
             _ => (),
         }
     }
+    if !par_stack.is_empty() {
+        unreachable!("mismatched brackets")
+    }
 
     let mut indent = 0;
     for i in instructions.iter() {
