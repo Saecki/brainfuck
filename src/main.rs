@@ -279,7 +279,7 @@ fn main() -> ExitCode {
 
     const LEN: usize = 30000;
     let mut ip = 0;
-    let mut pointer: usize = 0;
+    let mut rp: usize = 0;
     let mut registers: [u8; LEN] = [0; LEN];
     loop {
         let Some(b) = instructions.get(ip) else {
@@ -287,43 +287,43 @@ fn main() -> ExitCode {
         };
 
         match *b {
-            Instruction::Shl(n) => pointer -= n as usize,
-            Instruction::Shr(n) => pointer += n as usize,
-            Instruction::Inc(n) => registers[pointer] = registers[pointer].wrapping_add(n),
-            Instruction::Dec(n) => registers[pointer] = registers[pointer].wrapping_sub(n),
+            Instruction::Shl(n) => rp -= n as usize,
+            Instruction::Shr(n) => rp += n as usize,
+            Instruction::Inc(n) => registers[rp] = registers[rp].wrapping_add(n),
+            Instruction::Dec(n) => registers[rp] = registers[rp].wrapping_sub(n),
             Instruction::Output => {
-                _ = std::io::stdout().write(&registers[pointer..pointer + 1]);
+                _ = std::io::stdout().write(&registers[rp..rp + 1]);
             }
             Instruction::Input => {
-                _ = std::io::stdin().read(&mut registers[pointer..pointer + 1]);
+                _ = std::io::stdin().read(&mut registers[rp..rp + 1]);
             }
             Instruction::JumpZ(idx) => {
-                if registers[pointer] == 0 {
+                if registers[rp] == 0 {
                     ip = idx as usize;
                     continue;
                 }
             }
             Instruction::JumpNz(idx) => {
-                if registers[pointer] > 0 {
+                if registers[rp] > 0 {
                     ip = idx as usize;
                     continue;
                 }
             }
 
-            Instruction::Zero(o) => registers[(pointer as isize + o as isize) as usize] = 0,
+            Instruction::Zero(o) => registers[(rp as isize + o as isize) as usize] = 0,
             Instruction::Add(o) => {
-                let val = registers[pointer];
-                let r = &mut registers[(pointer as isize + o as isize) as usize];
+                let val = registers[rp];
+                let r = &mut registers[(rp as isize + o as isize) as usize];
                 *r = r.wrapping_add(val);
             }
             Instruction::Sub(o) => {
-                let val = registers[pointer];
-                let r = &mut registers[(pointer as isize + o as isize) as usize];
+                let val = registers[rp];
+                let r = &mut registers[(rp as isize + o as isize) as usize];
                 *r = r.wrapping_sub(val);
             }
             Instruction::AddMul(o, n) => {
-                let val = n.wrapping_mul(registers[pointer] as i16);
-                let r = &mut registers[(pointer as isize + o as isize) as usize];
+                let val = n.wrapping_mul(registers[rp] as i16);
+                let r = &mut registers[(rp as isize + o as isize) as usize];
                 *r = r.wrapping_add(val as u8);
             }
         }
