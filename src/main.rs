@@ -116,7 +116,7 @@ fn main() -> ExitCode {
 
     let mut path = None;
     let mut config = Config { verbose: 0 };
-    while let Some(a) = args.next() {
+    for a in args {
         if let Some(n) = a.strip_prefix("--") {
             match n {
                 "verbose" => config.verbose += 1,
@@ -125,7 +125,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
-        } else if let Some(n) = a.strip_prefix("-") {
+        } else if let Some(n) = a.strip_prefix('-') {
             for c in n.chars() {
                 match c {
                     'v' => config.verbose += 1,
@@ -214,16 +214,13 @@ fn main() -> ExitCode {
             let [a, b, c] = &instructions[i..i + 3] else {
                 unreachable!()
             };
-            match (a, b, c) {
-                (JumpZ(_), Dec(1), JumpNz(_)) => {
-                    let range = i..i + 3;
-                    if config.verbose >= 2 {
-                        println!("replaced {range:?} with zero");
-                    }
-                    instructions.drain(range);
-                    instructions.insert(i, Zero(0));
+            if let (JumpZ(_), Dec(1), JumpNz(_)) = (a, b, c) {
+                let range = i..i + 3;
+                if config.verbose >= 2 {
+                    println!("replaced {range:?} with zero");
                 }
-                _ => (),
+                instructions.drain(range);
+                instructions.insert(i, Zero(0));
             }
 
             i += 1;
