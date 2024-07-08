@@ -57,7 +57,7 @@ enum Instruction {
     ///     -
     /// ]
     /// ```
-    Zero,
+    Zero(i16),
     /// Add current register value to register at offset.
     Add(i16),
     /// Subtract current register value from register at offset.
@@ -78,12 +78,16 @@ impl std::fmt::Display for Instruction {
             Instruction::JumpZ(_) => write!(f, "["),
             Instruction::JumpNz(_) => write!(f, "]"),
 
-            Instruction::Zero => write!(f, "zero"),
-            Instruction::Add(i) => write!(f, "<{i}> +="),
-            Instruction::Sub(i) => write!(f, "<{i}> -="),
-            Instruction::AddMul(i, n) => write!(f, "<{i}> +=*({n})"),
+            Instruction::Zero(o) => write!(f, "<{o}> zero"),
+            Instruction::Add(o) => write!(f, "<{o}> +="),
+            Instruction::Sub(o) => write!(f, "<{o}> -="),
+            Instruction::AddMul(o, n) => write!(f, "<{o}> +=*({n})"),
         }
     }
+}
+
+struct Config {
+    verbose: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,11 +115,11 @@ fn main() -> ExitCode {
     };
 
     let mut path = None;
-    let mut verbose = 0;
+    let mut config = Config { verbose: 0 };
     while let Some(a) = args.next() {
         if let Some(n) = a.strip_prefix("--") {
             match n {
-                "verbose" => verbose += 1,
+                "verbose" => config.verbose += 1,
                 _ => {
                     eprintln!("unexpected argument `{a}`");
                     return ExitCode::FAILURE;
@@ -124,7 +128,7 @@ fn main() -> ExitCode {
         } else if let Some(n) = a.strip_prefix("-") {
             for c in n.chars() {
                 match c {
-                    'v' => verbose += 1,
+                    'v' => config.verbose += 1,
                     _ => {
                         eprintln!("unexpected flag `{c}`");
                         return ExitCode::FAILURE;
@@ -168,7 +172,7 @@ fn main() -> ExitCode {
     let mut instructions = tokens
         .chunk_by(|a, b| a.is_combinable() && a == b)
         .inspect(|c| {
-            if verbose >= 2 && c.len() > 1 {
+            if config.verbose >= 2 && c.len() > 1 {
                 println!("combine {}", c.len());
             }
         })
@@ -183,7 +187,7 @@ fn main() -> ExitCode {
             Token::RSquare => Instruction::JumpNz(0),
         })
         .collect::<Vec<_>>();
-    if verbose >= 1 {
+    if config.verbose >= 1 {
         println!("============================================================");
         println!(
             "tokens before {} after: {} ({:.3}%)",
@@ -193,7 +197,7 @@ fn main() -> ExitCode {
         );
         println!("============================================================");
     }
-    if verbose >= 3 || command == Command::Format {
+    if config.verbose >= 3 || command == Command::Format {
         print_brainfuck_code(&instructions);
         if command == Command::Format {
             return ExitCode::SUCCESS;
@@ -206,18 +210,18 @@ fn main() -> ExitCode {
         use Instruction::*;
 
         let mut i = 0;
-        while i + 3 < instructions.len() - 3 {
+        while i + 3 < instructions.len() {
             let [a, b, c] = &instructions[i..i + 3] else {
                 unreachable!()
             };
             match (a, b, c) {
                 (JumpZ(_), Dec(1), JumpNz(_)) => {
                     let range = i..i + 3;
-                    if verbose >= 2 {
+                    if config.verbose >= 2 {
                         println!("replaced {range:?} with zero");
                     }
                     instructions.drain(range);
-                    instructions.insert(i, Zero);
+                    instructions.insert(i, Zero(0));
                 }
                 _ => (),
             }
@@ -227,118 +231,13 @@ fn main() -> ExitCode {
     }
     // arithmetic instructions
     {
-        use Instruction::*;
-
         let mut i = 0;
-        'outer: while i < instructions.len() {
-            let JumpZ(_) = instructions[i] else {
-                i += 1;
-                continue 'outer;
-            };
-
-            let start = i + 1;
-            let mut end = None;
-            for (j, inst) in instructions[start..].iter().enumerate() {
-                match inst {
-                    JumpZ(_) => break,
-                    JumpNz(_) => {
-                        end = Some(start + j);
-                        break;
-                    }
-                    _ => (),
-                }
-            }
-            let Some(end) = end else {
-                i += 1;
-                continue 'outer;
-            };
-            let inner = &instructions[start..end];
-
-            let mut offset = 0;
-            let mut num_arith = 0;
-            let mut iteration_diff = 0;
-            for inst in inner {
-                match inst {
-                    Shl(n) => offset -= *n as i16,
-                    Shr(n) => offset += *n as i16,
-                    Inc(n) => {
-                        if offset == 0 {
-                            iteration_diff += *n as i16;
-                        } else {
-                            num_arith += 1;
-                        }
-                    }
-                    Dec(n) => {
-                        if offset == 0 {
-                            iteration_diff -= *n as i16;
-                        } else {
-                            num_arith += 1;
-                        }
-                    }
-                    Output
-                    | Input
-                    | JumpZ(_)
-                    | JumpNz(_)
-                    | Zero
-                    | Add(_)
-                    | Sub(_)
-                    | AddMul(_, _) => {
-                        i += 1;
-                        continue 'outer;
-                    }
-                }
-            }
-            if offset != 0 || iteration_diff != -1 {
-                i += 1;
-                continue 'outer;
-            }
-
-            let mut offset = 0;
-            let mut replacements = Vec::with_capacity(num_arith + 1);
-            for inst in inner.iter() {
-                match inst {
-                    Shl(n) => offset -= *n as i16,
-                    Shr(n) => offset += *n as i16,
-                    Inc(n) => {
-                        if offset != 0 {
-                            let replacement = match n {
-                                1 => Add(offset),
-                                _ => AddMul(offset, *n as i16),
-                            };
-                            replacements.push(replacement);
-                        }
-                    }
-                    Dec(n) => {
-                        if offset != 0 {
-                            let replacement = match n {
-                                1 => Sub(offset),
-                                _ => AddMul(offset, -(*n as i16)),
-                            };
-                            replacements.push(replacement);
-                        }
-                    }
-                    Output
-                    | Input
-                    | JumpZ(_)
-                    | JumpNz(_)
-                    | Zero
-                    | Add(_)
-                    | Sub(_)
-                    | AddMul(_, _) => unreachable!(),
-                }
-            }
-            replacements.push(Zero);
-
-            let range = start - 1..end + 1;
-            if verbose >= 2 {
-                println!("replaced {range:?} with {replacements:?}");
-            }
-            _ = instructions.splice(range, replacements);
-
+        while i < instructions.len() {
+            arithmetic_loop_pass(&config, &mut instructions, i);
             i += 1;
         }
     }
-    if verbose >= 1 {
+    if config.verbose >= 1 {
         println!("============================================================");
         println!(
             "instructions before {} after: {} ({:.3}%)",
@@ -369,7 +268,7 @@ fn main() -> ExitCode {
         unreachable!("mismatched brackets")
     }
 
-    if verbose >= 3 || command == Command::Ir {
+    if config.verbose >= 3 || command == Command::Ir {
         print_instructions(&instructions);
         if command == Command::Ir {
             return ExitCode::SUCCESS;
@@ -411,20 +310,20 @@ fn main() -> ExitCode {
                 }
             }
 
-            Instruction::Zero => registers[pointer] = 0,
-            Instruction::Add(i) => {
+            Instruction::Zero(o) => registers[(pointer as isize + o as isize) as usize] = 0,
+            Instruction::Add(o) => {
                 let val = registers[pointer];
-                let r = &mut registers[(pointer as isize + i as isize) as usize];
+                let r = &mut registers[(pointer as isize + o as isize) as usize];
                 *r = r.wrapping_add(val);
             }
-            Instruction::Sub(i) => {
+            Instruction::Sub(o) => {
                 let val = registers[pointer];
-                let r = &mut registers[(pointer as isize + i as isize) as usize];
+                let r = &mut registers[(pointer as isize + o as isize) as usize];
                 *r = r.wrapping_sub(val);
             }
-            Instruction::AddMul(i, n) => {
+            Instruction::AddMul(o, n) => {
                 let val = n.wrapping_mul(registers[pointer] as i16);
-                let r = &mut registers[(pointer as isize + i as isize) as usize];
+                let r = &mut registers[(pointer as isize + o as isize) as usize];
                 *r = r.wrapping_add(val as u8);
             }
         }
@@ -454,7 +353,7 @@ fn print_brainfuck_code(instructions: &[Instruction]) {
             Instruction::JumpZ(_) => println!("["),
             Instruction::JumpNz(_) => println!("]"),
 
-            Instruction::Zero => unreachable!(),
+            Instruction::Zero(_) => unreachable!(),
             Instruction::Add(_) => unreachable!(),
             Instruction::Sub(_) => unreachable!(),
             Instruction::AddMul(_, _) => unreachable!(),
@@ -479,4 +378,155 @@ fn print_instructions(instructions: &[Instruction]) {
             indent += 1
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IterationDiff {
+    /// The change each loop iteration will have on the iteration register.
+    Diff(i16),
+    /// The loop always zeros the iteration register, this is equivalent to an if statement.
+    Zeroed,
+    /// The loop always zeros the iteration register, and then performs other operations on the
+    /// iteration register. If the zeroed diff results in 0, this is also equivalent to an if
+    /// statement, and the register is just used as temporary storage. Otherwise this is an
+    /// infinite loop.
+    ZeroedDiff(i16),
+}
+
+impl IterationDiff {
+    fn inc(&mut self, inc: u8) {
+        use IterationDiff::*;
+        let inc = inc as i16;
+        match self {
+            Diff(d) | ZeroedDiff(d) => *d += inc,
+            Zeroed => *self = ZeroedDiff(inc),
+        }
+    }
+
+    fn dec(&mut self, dec: u8) {
+        use IterationDiff::*;
+        let dec = dec as i16;
+        match self {
+            Diff(d) | ZeroedDiff(d) => *d -= dec,
+            Zeroed => *self = ZeroedDiff(-dec),
+        }
+    }
+
+    fn zero(&mut self) {
+        use IterationDiff::*;
+        *self = Zeroed;
+    }
+}
+
+fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i: usize) {
+    use Instruction::*;
+
+    let JumpZ(_) = instructions[i] else { return };
+
+    let start = i + 1;
+    let mut end = None;
+    for (j, inst) in instructions[start..].iter().enumerate() {
+        match inst {
+            JumpZ(_) => break,
+            JumpNz(_) => {
+                end = Some(start + j);
+                break;
+            }
+            _ => (),
+        }
+    }
+    let Some(end) = end else { return };
+    let inner = &instructions[start..end];
+    let mut offset = 0;
+    let mut num_arith = 0;
+    let mut iteration_diff = IterationDiff::Diff(0);
+    for inst in inner {
+        match inst {
+            Shl(n) => offset -= *n as i16,
+            Shr(n) => offset += *n as i16,
+            Inc(n) => {
+                if offset == 0 {
+                    iteration_diff.inc(*n);
+                } else {
+                    num_arith += 1;
+                }
+            }
+            Dec(n) => {
+                if offset == 0 {
+                    iteration_diff.dec(*n);
+                } else {
+                    num_arith += 1;
+                }
+            }
+            Zero(o) => {
+                if offset + o == 0 {
+                    iteration_diff.zero();
+                } else {
+                    num_arith += 1;
+                }
+            }
+            Output | Input | JumpZ(_) | JumpNz(_) | Add(_) | Sub(_) | AddMul(_, _) => return,
+        }
+    }
+
+    if offset != 0 {
+        return;
+    }
+
+    match iteration_diff {
+        IterationDiff::Diff(-1) => (),
+        IterationDiff::Diff(_) => return,
+        // TODO: consider removing trailing check
+        IterationDiff::Zeroed => return,
+        // TODO: consider removing trailing check
+        IterationDiff::ZeroedDiff(0) => return,
+        IterationDiff::ZeroedDiff(_) => {
+            let range = start - 1..end + 1;
+            let l = &instructions[range.clone()];
+            println!("\x1b[93mwarning\x1b[0m: infinite loop detected at {range:?}:\n{l:?}");
+            return;
+        }
+    }
+
+    let mut offset = 0;
+    let mut replacements = Vec::with_capacity(num_arith + 1);
+    for inst in inner.iter() {
+        match inst {
+            Shl(n) => offset -= *n as i16,
+            Shr(n) => offset += *n as i16,
+            Inc(n) => {
+                if offset != 0 {
+                    let replacement = match n {
+                        1 => Add(offset),
+                        _ => AddMul(offset, *n as i16),
+                    };
+                    replacements.push(replacement);
+                }
+            }
+            Dec(n) => {
+                if offset != 0 {
+                    let replacement = match n {
+                        1 => Sub(offset),
+                        _ => AddMul(offset, -(*n as i16)),
+                    };
+                    replacements.push(replacement);
+                }
+            }
+            Zero(o) => {
+                if offset + o != 0 {
+                    replacements.push(Zero(offset + o));
+                }
+            }
+            Output | Input | JumpZ(_) | JumpNz(_) | Add(_) | Sub(_) | AddMul(_, _) => {
+                unreachable!()
+            }
+        }
+    }
+    replacements.push(Zero(0));
+
+    let range = start - 1..end + 1;
+    if config.verbose >= 2 {
+        println!("replaced {range:?} with {replacements:?}");
+    }
+    _ = instructions.splice(range, replacements);
 }
