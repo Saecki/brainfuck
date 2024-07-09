@@ -3,6 +3,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
+const NUM_REGISTERS: usize = 30000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Token {
     Shl,
@@ -64,7 +66,9 @@ enum Instruction {
     /// Subtract current register value from register at offset.
     Sub(i16),
     /// Multiply current register value and add to register at offset.
-    AddMul(i16, i16),
+    AddMul(i16, u8),
+    /// Multiply current register value and subtraction from register at offset.
+    SubMul(i16, u8),
 }
 
 impl std::fmt::Display for Instruction {
@@ -83,6 +87,7 @@ impl std::fmt::Display for Instruction {
             Instruction::Add(o) => write!(f, "<{o}> add"),
             Instruction::Sub(o) => write!(f, "<{o}> sub"),
             Instruction::AddMul(o, n) => write!(f, "<{o}> addmul({n})"),
+            Instruction::SubMul(o, n) => write!(f, "<{o}> submul({n})"),
         }
     }
 }
@@ -293,7 +298,6 @@ fn main() -> ExitCode {
 }
 
 fn run(instructions: &[Instruction]) {
-    const NUM_REGISTERS: usize = 30000;
     let mut ip = 0;
     let mut rp: usize = 0;
     let mut registers = [0u8; NUM_REGISTERS];
@@ -338,9 +342,14 @@ fn run(instructions: &[Instruction]) {
                 *r = r.wrapping_sub(val);
             }
             Instruction::AddMul(o, n) => {
-                let val = n.wrapping_mul(registers[rp] as i16);
+                let val = n.wrapping_mul(registers[rp]);
                 let r = &mut registers[(rp as isize + o as isize) as usize];
-                *r = r.wrapping_add(val as u8);
+                *r = r.wrapping_add(val);
+            }
+            Instruction::SubMul(o, n) => {
+                let val = n.wrapping_mul(registers[rp]);
+                let r = &mut registers[(rp as isize + o as isize) as usize];
+                *r = r.wrapping_sub(val);
             }
         }
 
@@ -444,13 +453,27 @@ fn compile(instructions: &[Instruction]) -> Vec<u8> {
     // generate code
     let mut par_stack = Vec::new();
 
-    // initialize register pointer
-    write_x86_instruction(&mut code, []);
+    // zero our register pointer in the `eax` register
+    write_x86_instruction(&mut code, [0x31, 0b00_000_000]);
+
+    // allocate stack space for 30000 elements
+    let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_REGISTERS as u32);
+    write_x86_instruction(&mut code, [0x83, 0b00_100_100, b0, b1, b2, b3]);
+
+    // TODO: zero brainfuck registers
 
     for (i, inst) in instructions.iter().enumerate() {
         match inst {
-            Instruction::Shl(n) => todo!(),
-            Instruction::Shr(n) => todo!(),
+            Instruction::Shl(n) => {
+                // immediate sub from the `eax` register
+                let [b0, b1] = u16::to_le_bytes(*n);
+                write_x86_instruction(&mut code, [0x2D, b0, b1, 0, 0]);
+            }
+            Instruction::Shr(n) => {
+                // immediate add to the `eax` register
+                let [b0, b1] = u16::to_le_bytes(*n);
+                write_x86_instruction(&mut code, [0x05, b0, b1, 0, 0]);
+            }
             Instruction::Inc(_) => todo!(),
             Instruction::Dec(_) => todo!(),
             Instruction::Output => todo!(),
@@ -461,13 +484,14 @@ fn compile(instructions: &[Instruction]) -> Vec<u8> {
             Instruction::Add(_) => todo!(),
             Instruction::Sub(_) => todo!(),
             Instruction::AddMul(_, _) => todo!(),
+            Instruction::SubMul(_, _) => todo!(),
         }
     }
 
     code
 }
 
-fn write_x86_instruction(code: &mut Vec<u8>, instruction: [u8; 4]) {
+fn write_x86_instruction<const SIZE: usize>(code: &mut Vec<u8>, instruction: [u8; SIZE]) {
     _ = code.write_all(&instruction);
 }
 
@@ -494,6 +518,7 @@ fn print_brainfuck_code(instructions: &[Instruction]) {
             Instruction::Add(_) => unreachable!(),
             Instruction::Sub(_) => unreachable!(),
             Instruction::AddMul(_, _) => unreachable!(),
+            Instruction::SubMul(_, _) => unreachable!(),
         }
         if let Instruction::JumpZ(_) = i {
             indent += 1
@@ -635,7 +660,7 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
                 if offset != 0 {
                     let replacement = match n {
                         1 => Add(offset),
-                        _ => AddMul(offset, *n as i16),
+                        _ => AddMul(offset, *n),
                     };
                     replacements.push(replacement);
                 }
@@ -644,7 +669,7 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
                 if offset != 0 {
                     let replacement = match n {
                         1 => Sub(offset),
-                        _ => AddMul(offset, -(*n as i16)),
+                        _ => SubMul(offset, *n),
                     };
                     replacements.push(replacement);
                 }
@@ -654,7 +679,7 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
                     replacements.push(Zero(offset + o));
                 }
             }
-            Output | Input | JumpZ(_) | JumpNz(_) | Add(_) | Sub(_) | AddMul(_, _) => {
+            Output | Input | JumpZ(_) | JumpNz(_) | Add(_) | Sub(_) | AddMul(..) | SubMul(..) => {
                 unreachable!()
             }
         }
