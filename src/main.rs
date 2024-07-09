@@ -1,5 +1,6 @@
 use std::cmp::PartialOrd;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,9 +80,9 @@ impl std::fmt::Display for Instruction {
             Instruction::JumpNz(_) => write!(f, "]"),
 
             Instruction::Zero(o) => write!(f, "<{o}> zero"),
-            Instruction::Add(o) => write!(f, "<{o}> +="),
-            Instruction::Sub(o) => write!(f, "<{o}> -="),
-            Instruction::AddMul(o, n) => write!(f, "<{o}> +=*({n})"),
+            Instruction::Add(o) => write!(f, "<{o}> add"),
+            Instruction::Sub(o) => write!(f, "<{o}> sub"),
+            Instruction::AddMul(o, n) => write!(f, "<{o}> addmul({n})"),
         }
     }
 }
@@ -95,6 +96,7 @@ enum Command {
     Format,
     Ir,
     Run,
+    Compile,
 }
 
 fn main() -> ExitCode {
@@ -104,6 +106,7 @@ fn main() -> ExitCode {
         Some("format") => Command::Format,
         Some("ir") => Command::Ir,
         Some("run") => Command::Run,
+        Some("compile") => Command::Compile,
         Some(a) => {
             eprintln!("invalid command: `{a}`");
             return ExitCode::FAILURE;
@@ -274,10 +277,26 @@ fn main() -> ExitCode {
         }
     }
 
-    const LEN: usize = 30000;
+    match command {
+        Command::Format => unreachable!(),
+        Command::Ir => unreachable!(),
+        Command::Run => run(&instructions),
+        Command::Compile => {
+            let code = compile(&instructions);
+            let path: &Path = path.as_ref();
+            let bin_path = path.with_extension("elf");
+            std::fs::write(bin_path, &code).unwrap();
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn run(instructions: &[Instruction]) {
+    const NUM_REGISTERS: usize = 30000;
     let mut ip = 0;
     let mut rp: usize = 0;
-    let mut registers: [u8; LEN] = [0; LEN];
+    let mut registers = [0u8; NUM_REGISTERS];
     loop {
         let Some(b) = instructions.get(ip) else {
             break;
@@ -327,8 +346,129 @@ fn main() -> ExitCode {
 
         ip += 1;
     }
+}
 
-    ExitCode::SUCCESS
+fn compile(instructions: &[Instruction]) -> Vec<u8> {
+    const B32BIT_ELF_HEADER_LEN: usize = 0x34;
+    const B32BIT_PROGRAM_HEADER_LEN: usize = 0x20;
+
+    let mut elf_header = [0u8; B32BIT_ELF_HEADER_LEN];
+    {
+        // e_ident
+        elf_header[0x00..0x04].copy_from_slice(b"\x7fELF"); // EI_MAG
+        elf_header[0x04] = 0x1; // EI_CLASS      : 32-bit
+        elf_header[0x05] = 0x1; // EI_DATA       : little-endian
+        elf_header[0x06] = 0x1; // EI_VERSION    : 1
+        elf_header[0x07] = 0x3; // EI_OSABI      : linux
+        elf_header[0x08] = 0x3; // EI_ABIVERSION : 0
+                                // EI_PAD        : reserved
+
+        // e_type: executable
+        elf_header[0x10..0x12].copy_from_slice(&u16::to_le_bytes(0x0002));
+
+        // e_machine: AMD x86-64
+        elf_header[0x12..0x14].copy_from_slice(&u16::to_le_bytes(0x003E));
+
+        // e_version: 1
+        elf_header[0x14..0x18].copy_from_slice(&u32::to_le_bytes(0x00000001));
+
+        // e_entry: entry point offset
+        // TODO: write
+
+        // e_phoff: program header table offset immediately follows the ELF header
+        elf_header[0x1C..0x20].copy_from_slice(&u32::to_le_bytes(B32BIT_ELF_HEADER_LEN as u32));
+
+        // e_shoff: section header table offset
+        // TODO: write section header table offset
+
+        // e_flags: no flags
+
+        // e_ehsize: ELF header size is 52 for 32-bit binaries
+        elf_header[0x28..0x2a].copy_from_slice(&u16::to_le_bytes(B32BIT_ELF_HEADER_LEN as u16));
+
+        // e_phentsize: program header table size
+        // TODO: write
+
+        // e_phnum: program header table entry count
+        // TODO: write
+
+        // e_shentsize: section header table size
+        // TODO: write
+
+        // e_shnum:  section header table entry count
+        // TODO: write
+
+        // e_shstrndx: section header table entry index that contains the section names
+        // TODO: write
+    }
+
+    let mut program_header = [0u8; B32BIT_PROGRAM_HEADER_LEN];
+    {
+        // p_type:
+        // TODO
+        program_header[0x00..0x04].copy_from_slice(&u32::to_le_bytes(0x00000000));
+
+        // p_offset:
+        // TODO
+        program_header[0x04..0x08].copy_from_slice(&u32::to_le_bytes(0x00000000));
+
+        // p_vaddr:
+        // TODO
+        program_header[0x08..0x0C].copy_from_slice(&u32::to_le_bytes(0x00000000));
+
+        // p_paddr:
+        // TODO
+        program_header[0x0C..0x10].copy_from_slice(&u32::to_le_bytes(0x00000000));
+
+        // p_filesz:
+        // TODO
+        program_header[0x10..0x14].copy_from_slice(&u32::to_le_bytes(0x00000000));
+
+        // p_memsz:
+        // TODO
+        program_header[0x14..0x18].copy_from_slice(&u32::to_le_bytes(0x00000000));
+
+        // p_flags:
+        // TODO
+        program_header[0x18..0x1C].copy_from_slice(&u32::to_le_bytes(0x00000000));
+
+        // p_align:
+        // TODO
+        program_header[0x1C..0x20].copy_from_slice(&u32::to_le_bytes(0x00000000));
+    }
+
+    let mut code = (elf_header.iter().copied())
+        .chain(program_header.iter().copied())
+        .collect();
+
+    // generate code
+    let mut par_stack = Vec::new();
+
+    // initialize register pointer
+    write_x86_instruction(&mut code, []);
+
+    for (i, inst) in instructions.iter().enumerate() {
+        match inst {
+            Instruction::Shl(n) => todo!(),
+            Instruction::Shr(n) => todo!(),
+            Instruction::Inc(_) => todo!(),
+            Instruction::Dec(_) => todo!(),
+            Instruction::Output => todo!(),
+            Instruction::Input => todo!(),
+            Instruction::JumpZ(_) => todo!(),
+            Instruction::JumpNz(_) => todo!(),
+            Instruction::Zero(_) => todo!(),
+            Instruction::Add(_) => todo!(),
+            Instruction::Sub(_) => todo!(),
+            Instruction::AddMul(_, _) => todo!(),
+        }
+    }
+
+    code
+}
+
+fn write_x86_instruction(code: &mut Vec<u8>, instruction: [u8; 4]) {
+    _ = code.write_all(&instruction);
 }
 
 fn print_brainfuck_code(instructions: &[Instruction]) {
