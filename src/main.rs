@@ -257,6 +257,9 @@ fn main() -> ExitCode {
             i += 1;
         }
     }
+
+    dead_code_elimination(&config, &mut instructions);
+
     if config.verbose >= 1 {
         println!("============================================================");
         println!(
@@ -582,4 +585,93 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
         println!("replaced {range:?} with {replacements:?}");
     }
     _ = instructions.splice(range, replacements);
+}
+
+fn dead_code_elimination(config: &Config, instructions: &mut Vec<Instruction>) {
+    // execute instructions that are known to be constant time
+    let mut registers = [0u8; NUM_REGISTERS];
+    let mut rp = 0;
+    let mut i = 0;
+    while i < instructions.len() {
+        let Some(inst) = instructions.get(i) else {
+            unreachable!()
+        };
+        match inst {
+            Instruction::Shl(n) => rp -= *n,
+            Instruction::Shr(n) => rp += *n,
+            Instruction::Inc(n) => {
+                let reg = &mut registers[rp as usize];
+                *reg = reg.wrapping_add(*n);
+            }
+            Instruction::Dec(n) => {
+                let reg = &mut registers[rp as usize];
+                *reg = reg.wrapping_sub(*n);
+            }
+            Instruction::Output => return,
+            Instruction::Input => return,
+            Instruction::JumpZ(_) => {
+                let val = registers[rp as usize];
+                if val != 0 {
+                    return;
+                }
+                remove_dead_code(config, instructions, i);
+                continue;
+            }
+            Instruction::JumpNz(_) => return,
+            Instruction::Zero(o) => {
+                let idx = rp as i16 + o;
+                registers[idx as usize] = 0;
+            }
+            Instruction::Add(o) => {
+                let val = registers[rp as usize];
+                let idx = rp as i16 + o;
+                let reg = &mut registers[idx as usize];
+                *reg = reg.wrapping_add(val);
+            }
+            Instruction::Sub(o) => {
+                let val = registers[rp as usize];
+                let idx = rp as i16 + o;
+                let reg = &mut registers[idx as usize];
+                *reg = reg.wrapping_sub(val);
+            }
+            Instruction::AddMul(o, n) => {
+                let val = registers[rp as usize];
+                let idx = rp as i16 + o;
+                let reg = &mut registers[idx as usize];
+                *reg = reg.wrapping_add(val.wrapping_mul(*n));
+            }
+            Instruction::SubMul(o, n) => {
+                let val = registers[rp as usize];
+                let idx = rp as i16 + o;
+                let reg = &mut registers[idx as usize];
+                *reg = reg.wrapping_sub(val.wrapping_mul(*n));
+            }
+        }
+
+        i += 1;
+    }
+}
+
+fn remove_dead_code(config: &Config, instructions: &mut Vec<Instruction>, start: usize) {
+    let mut jump_stack = 0;
+
+    for (i, inst) in instructions[start..].iter().enumerate() {
+        match inst {
+            Instruction::JumpZ(_) => jump_stack += 1,
+            Instruction::JumpNz(_) => {
+                jump_stack -= 1;
+                if jump_stack == 0 {
+                    let range = start..start + i + 1;
+                    if config.verbose >= 2 {
+                        println!("removed dead code at {range:?}");
+                    }
+                    instructions.drain(range);
+                    return;
+                }
+            }
+            _ => (),
+        }
+    }
+
+    unreachable!()
 }
