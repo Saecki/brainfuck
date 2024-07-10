@@ -242,7 +242,36 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
                 write_instruction(&mut code, [0x80, modrm, sib, *n]);
             }
-            Instruction::Output => todo!(),
+            Instruction::Output => {
+                // `C7 /0 id`: move immediate value to `eax`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Eax), 0) };
+                const WRITE_SYSCALL: u32 = 1;
+                let [b0, b1, b2, b3] = u32::to_le_bytes(WRITE_SYSCALL);
+                write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
+
+                // `C7 /0 id`: move immediate value to `edi`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Edi), 0) };
+                const STDOUT_FD: u32 = 1;
+                let [b0, b1, b2, b3] = u32::to_le_bytes(STDOUT_FD);
+                write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
+
+                // write address of string to `esi`
+                // `89 /r`: move from `esp` to `esi`
+                let modrm = const { normal_modrm(ModRm::Register(Reg::Esi), Reg::Esp) };
+                write_instruction(&mut code, [0x89, modrm]);
+                // `01 /r`: add `ecx` to `esi`
+                let modrm = const { normal_modrm(ModRm::Register(Reg::Esi), Reg::Ecx) };
+                write_instruction(&mut code, [0x01, modrm]);
+
+                // `C7 /0 id`: move immediate value to `edx`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Edx), 0) };
+                const STRING_LEN: u32 = 1;
+                let [b0, b1, b2, b3] = u32::to_le_bytes(STRING_LEN);
+                write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
+
+                // `0F 05`: SYSENTER - fast system call
+                write_instruction(&mut code, [0x0F, 0x34]);
+            }
             Instruction::Input => todo!(),
             Instruction::JumpZ(jump) => {
                 let pos = code.len();
