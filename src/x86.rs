@@ -68,12 +68,12 @@ pub enum Reg {
 
 /// Generate a `MOD-REG_R/M` byte with a `reg` field
 pub const fn normal_modrm(modrm: ModRm, reg: Reg) -> u8 {
-    ((modrm.mode() as u8) << 6) | ((reg as u8) << 3) | (modrm.rm() as u8)
+    (modrm.mode() << 6) | ((reg as u8) << 3) | modrm.rm()
 }
 
 /// Generate a `MOD-REG_R/M` byte with an op-code extension
 pub const fn ext_modrm(modrm: ModRm, ext: u8) -> u8 {
-    ((modrm.mode() as u8) << 6) | (ext << 3) | (modrm.rm() as u8)
+    (modrm.mode() << 6) | (ext << 3) | modrm.rm()
 }
 
 pub enum Scale {
@@ -192,7 +192,7 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
         // `C7 /0 id`: write ITERATIONS to `ecx`
         const NUM_ITERATIONS: u32 = NUM_REGISTERS as u32 / 4;
         let modrm = const { ext_modrm(ModRm::Register(Reg::Ecx), 0) };
-        let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_ITERATIONS as u32);
+        let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_ITERATIONS);
         write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
 
         let loop_start = code.len();

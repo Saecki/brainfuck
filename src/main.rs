@@ -312,7 +312,7 @@ fn main() -> ExitCode {
             let code = x86::compile(&instructions);
             let path: &Path = path.as_ref();
             let bin_path = path.with_extension("elf");
-            std::fs::write(bin_path, &code).unwrap();
+            std::fs::write(&bin_path, &code).unwrap();
         }
     }
 
