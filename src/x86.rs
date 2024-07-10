@@ -105,7 +105,7 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
         elf_header[0x05] = 0x1; // EI_DATA       : little-endian
         elf_header[0x06] = 0x1; // EI_VERSION    : 1
         elf_header[0x07] = 0x3; // EI_OSABI      : linux
-        elf_header[0x08] = 0x3; // EI_ABIVERSION : 0
+        elf_header[0x08] = 0x0; // EI_ABIVERSION : 0
                                 // EI_PAD        : reserved
 
         // e_type: executable
