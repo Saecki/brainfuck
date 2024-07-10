@@ -1,5 +1,6 @@
 use std::cmp::PartialOrd;
 use std::io::{Read, Write};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -52,9 +53,9 @@ pub enum Instruction {
     Output,
     Input,
     /// Jump to the position if the current register value is zero.
-    JumpZ(u32),
+    JumpZ(Jump),
     /// Jump to the position if the current register value is not zero.
-    JumpNz(u32),
+    JumpNz(Jump),
 
     /// Clear the current register:
     /// ```bf
@@ -71,6 +72,12 @@ pub enum Instruction {
     AddMul(i16, u8),
     /// Multiply current register value and subtraction from register at offset.
     SubMul(i16, u8),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Jump {
+    Location(NonZeroU32),
+    Redundant,
 }
 
 impl std::fmt::Display for Instruction {
@@ -193,8 +200,8 @@ fn main() -> ExitCode {
             Token::Dec => Instruction::Dec(chunk.len() as u8),
             Token::Output => Instruction::Output,
             Token::Input => Instruction::Input,
-            Token::LSquare => Instruction::JumpZ(0),
-            Token::RSquare => Instruction::JumpNz(0),
+            Token::LSquare => Instruction::JumpZ(Jump::Location(NonZeroU32::MAX)),
+            Token::RSquare => Instruction::JumpNz(Jump::Location(NonZeroU32::MAX)),
         })
         .collect::<Vec<_>>();
     if config.verbose >= 1 {
@@ -265,8 +272,12 @@ fn main() -> ExitCode {
                     unreachable!("mismatched brackets")
                 };
 
-                *opening_idx_ref = opening_idx as u32 + 1;
-                *closing_idx_ref = i as u32 + 1;
+                if let Jump::Location(loc) = opening_idx_ref {
+                    *loc = unsafe { NonZeroU32::new_unchecked(opening_idx as u32 + 1) };
+                }
+                if let Jump::Location(loc) = closing_idx_ref {
+                    *loc = unsafe { NonZeroU32::new_unchecked(i as u32 + 1) };
+                }
             }
             _ => (),
         }
@@ -319,18 +330,20 @@ fn run(instructions: &[Instruction]) {
             Instruction::Input => {
                 _ = std::io::stdin().read(&mut registers[rp..rp + 1]);
             }
-            Instruction::JumpZ(idx) => {
+            Instruction::JumpZ(Jump::Location(idx)) => {
                 if registers[rp] == 0 {
-                    ip = idx as usize;
+                    ip = idx.get() as usize;
                     continue;
                 }
             }
-            Instruction::JumpNz(idx) => {
+            Instruction::JumpZ(Jump::Redundant) => (),
+            Instruction::JumpNz(Jump::Location(idx)) => {
                 if registers[rp] > 0 {
-                    ip = idx as usize;
+                    ip = idx.get() as usize;
                     continue;
                 }
             }
+            Instruction::JumpNz(Jump::Redundant) => (),
 
             Instruction::Zero(o) => registers[(rp as isize + o as isize) as usize] = 0,
             Instruction::Add(o) => {
@@ -504,10 +517,16 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
     match iteration_diff {
         IterationDiff::Diff(-1) => (),
         IterationDiff::Diff(_) => return,
-        // TODO: consider removing trailing check
-        IterationDiff::Zeroed => return,
-        // TODO: consider removing trailing check
-        IterationDiff::ZeroedDiff(0) => return,
+        IterationDiff::Zeroed | IterationDiff::ZeroedDiff(0) => {
+            let JumpNz(jump) = &mut instructions[end] else {
+                unreachable!();
+            };
+            *jump = Jump::Redundant;
+            if config.verbose >= 2 {
+                println!("redundant conditional jump at {}", end);
+            }
+            return;
+        }
         IterationDiff::ZeroedDiff(_) => {
             let range = start - 1..end + 1;
             let l = &instructions[range.clone()];
