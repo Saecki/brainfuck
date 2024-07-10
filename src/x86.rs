@@ -91,87 +91,92 @@ pub const fn gen_sib(scale: Scale, index: Reg, base: Reg) -> u8 {
     ((scale as u8) << 6) | ((index as u8) << 3) | (base as u8)
 }
 
-/// Generate a 32-bit x86 linux ELF binary
+#[repr(C)]
+struct ElfFileHeader {
+    ei_magic: [u8; 4],
+    ei_class: u8,
+    ei_data: u8,
+    ei_version: u8,
+    ei_osabi: u8,
+    ei_abiversion: u8,
+    ei_pad: [u8; 7],
+
+    e_type: u16,
+    e_machine: u16,
+    e_version: u32,
+    e_entry: u64,
+    e_phoff: u64,
+    e_shoff: u64,
+    e_flags: u32,
+    e_ehsize: u16,
+    e_phentsize: u16,
+    e_phnum: u16,
+    e_shentsize: u16,
+    e_shnum: u16,
+    e_shstrndx: u16,
+}
+
+#[repr(C)]
+struct ElfProgramHeader {
+    p_type: u32,
+    p_flags: u32,
+    p_offset: u64,
+    p_vaddr: u64,
+    p_paddr: u64,
+    p_filesz: u64,
+    p_memsz: u64,
+    p_align: u64,
+}
+
+/// Generate a 64-bit x86 linux ELF binary
 pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
-    const B32BIT_ELF_HEADER_LEN: usize = 0x34;
-    const B32BIT_PROGRAM_HEADER_LEN: usize = 0x20;
-    const ENTRY_POINT: usize = B32BIT_ELF_HEADER_LEN + B32BIT_PROGRAM_HEADER_LEN;
+    const B64_ELF_HEADER_LEN: usize = 0x40;
+    const B64_PROGRAM_HEADER_LEN: usize = 0x38;
+    const ENTRY_POINT: usize = B64_ELF_HEADER_LEN + B64_PROGRAM_HEADER_LEN;
 
-    let mut elf_header = [0u8; B32BIT_ELF_HEADER_LEN];
-    {
-        // e_ident
-        elf_header[0x00..0x04].copy_from_slice(b"\x7fELF"); // EI_MAG
-        elf_header[0x04] = 0x1; // EI_CLASS      : 32-bit
-        elf_header[0x05] = 0x1; // EI_DATA       : little-endian
-        elf_header[0x06] = 0x1; // EI_VERSION    : 1
-        elf_header[0x07] = 0x3; // EI_OSABI      : linux
-        elf_header[0x08] = 0x0; // EI_ABIVERSION : 0
-                                // EI_PAD        : reserved
+    let elf_header: [u8; B64_ELF_HEADER_LEN] = {
+        let header = ElfFileHeader {
+            // e_ident
+            ei_magic: *b"\x7fELF",
+            ei_class: 0x02, // 64-bit
+            ei_data: 0x01,  // little-endian
+            ei_version: 0x01,
+            ei_osabi: 0x03, // linux
+            ei_abiversion: 0x00,
+            ei_pad: [0x00; 7], // reserved
 
-        // e_type: executable
-        elf_header[0x10..0x12].copy_from_slice(&u16::to_le_bytes(0x0002));
+            e_type: 0x0002,    // executable
+            e_machine: 0x003E, // AMD x86-64
+            e_version: 1,
+            e_entry: ENTRY_POINT as u64,         // entry point offset
+            e_phoff: B64_ELF_HEADER_LEN as u64, // program header table offset immediately follows the ELF header
+            e_shoff: 0,                         // no table thus 0 offset
+            e_flags: 0x0000_0000,               // no flags
+            e_ehsize: B64_ELF_HEADER_LEN as u16, // ELF header size is 64 (0x40) for 64-bit binaries
+            e_phentsize: B64_PROGRAM_HEADER_LEN as u16, //program header table size
+            e_phnum: 1,                         // program header table entry count
+            e_shentsize: 0,                     // no table thus irrelevant
+            e_shnum: 0,                         // no table thus 0 entries
+            e_shstrndx: 0, // section header table entry index that contains the section names
+        };
 
-        // e_machine: AMD x86-64
-        elf_header[0x12..0x14].copy_from_slice(&u16::to_le_bytes(0x003E));
+        unsafe { std::mem::transmute(header) }
+    };
 
-        // e_version: 1
-        elf_header[0x14..0x18].copy_from_slice(&u32::to_le_bytes(0x00000001));
+    let program_header: [u8; B64_PROGRAM_HEADER_LEN] = {
+        let header = ElfProgramHeader {
+            p_type: 0x0000_0001,  // loadable segment
+            p_flags: 0x0000_0001, // executable
+            p_offset: 0,          // (includes the whole file)
+            p_vaddr: 0x1000,      // virtual address to place the segment at
+            p_paddr: 0x1000, // physical address is not used (just set it to the same as the virtual address)
+            p_filesz: 0,     // size of the whole file (write after code generation)
+            p_memsz: 0,      // size of the whole file (write after code generation)
+            p_align: 1,      // no alignment
+        };
 
-        // e_entry: entry point offset
-        elf_header[0x18..0x1C].copy_from_slice(&u32::to_le_bytes(ENTRY_POINT as u32));
-
-        // e_phoff: program header table offset immediately follows the ELF header
-        elf_header[0x1C..0x20].copy_from_slice(&u32::to_le_bytes(B32BIT_ELF_HEADER_LEN as u32));
-
-        // e_shoff: section header table offset
-        // no table thus 0 offset
-
-        // e_flags: no flags
-
-        // e_ehsize: ELF header size is 52 (0x34) for 32-bit binaries
-        elf_header[0x28..0x2A].copy_from_slice(&u16::to_le_bytes(B32BIT_ELF_HEADER_LEN as u16));
-
-        // e_phentsize: program header table size
-        elf_header[0x2A..0x2C].copy_from_slice(&u16::to_le_bytes(B32BIT_PROGRAM_HEADER_LEN as u16));
-
-        // e_phnum: program header table entry count
-        elf_header[0x2C..0x2E].copy_from_slice(&u16::to_le_bytes(1));
-
-        // e_shentsize: section header table size
-        // no table thus irrelevant
-
-        // e_shnum: section header table entry count
-        // no table thus 0 entries
-
-        // e_shstrndx: section header table entry index that contains the section names
-        // no table thus irrelevant
-    }
-
-    let mut program_header = [0u8; B32BIT_PROGRAM_HEADER_LEN];
-    {
-        // p_type: loadable segment
-        program_header[0x00..0x04].copy_from_slice(&u32::to_le_bytes(0x00000001));
-
-        // p_offset: 0 (includes the whole file)
-
-        // p_vaddr: virtual address to place the segment at
-        program_header[0x08..0x0C].copy_from_slice(&u32::to_le_bytes(0x00001000));
-
-        // p_paddr: physical address is not used (just set it to the same as the virtual address)
-        program_header[0x0C..0x10].copy_from_slice(&u32::to_le_bytes(0x00001000));
-
-        // p_filesz: size of the whole file
-        // write after code generation
-
-        // p_memsz: size of the whole file
-        // write after code generation
-
-        // p_flags: executable
-        program_header[0x18..0x1C].copy_from_slice(&u32::to_le_bytes(0x00000001));
-
-        // p_align: no alignment
-        program_header[0x1C..0x20].copy_from_slice(&u32::to_le_bytes(0x00000001));
-    }
+        unsafe { std::mem::transmute(header) }
+    };
 
     let mut code = (elf_header.iter().copied())
         .chain(program_header.iter().copied())
@@ -269,8 +274,8 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 let [b0, b1, b2, b3] = u32::to_le_bytes(STRING_LEN);
                 write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
 
-                // `0F 05`: SYSENTER - fast system call
-                write_instruction(&mut code, [0x0F, 0x34]);
+                // `0F 05`: SYSCALL - fast system call
+                write_instruction(&mut code, [0x0F, 0x05]);
             }
             Instruction::Input => todo!(),
             Instruction::JumpZ(jump) => {
@@ -393,12 +398,12 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
 
     // update loadable segment size
     {
-        let size = code.len() as u32;
-        let program_header = &mut code[B32BIT_ELF_HEADER_LEN..][..B32BIT_PROGRAM_HEADER_LEN];
+        let size = code.len() as u64;
+        let program_header = &mut code[B64_ELF_HEADER_LEN..][..B64_PROGRAM_HEADER_LEN];
         // p_filesz: size of the whole file
-        program_header[0x10..0x14].copy_from_slice(&u32::to_le_bytes(size));
+        program_header[0x20..0x28].copy_from_slice(&u64::to_le_bytes(size));
         // p_memsz: size of the whole file
-        program_header[0x14..0x18].copy_from_slice(&u32::to_le_bytes(size));
+        program_header[0x28..0x30].copy_from_slice(&u64::to_le_bytes(size));
     }
 
     code
