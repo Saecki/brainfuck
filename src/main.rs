@@ -80,6 +80,12 @@ pub enum Jump {
     Redundant,
 }
 
+impl Jump {
+    pub fn is_redundant(&self) -> bool {
+        matches!(self, Self::Redundant)
+    }
+}
+
 impl std::fmt::Display for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
