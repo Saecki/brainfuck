@@ -263,6 +263,7 @@ fn main() -> ExitCode {
             let bin_path = path.with_extension("elf");
             let mut file = OpenOptions::new()
                 .write(true)
+                .truncate(true)
                 .create(true)
                 .mode(0o755)
                 .open(bin_path)
