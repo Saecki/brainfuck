@@ -2,18 +2,17 @@ use std::cmp::PartialOrd;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::num::NonZeroU32;
+use std::ops::ControlFlow;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::ExitCode;
 
+use crate::cli::{Command, Config, ANSII_CLEAR, ANSII_COLOR_YELLOW};
+
+pub mod cli;
 pub mod x86;
 
 const NUM_REGISTERS: usize = 1 << 15;
-
-const ANSII_CLEAR: &str = "\x1b[0m";
-const ANSII_UNDERLINED: &str = "\x1b[4m";
-const ANSII_COLOR_RED: &str = "\x1b[91m";
-const ANSII_COLOR_YELLOW: &str = "\x1b[93m";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Token {
@@ -114,74 +113,12 @@ impl std::fmt::Display for Instruction {
     }
 }
 
-struct Config {
-    verbose: u8,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Command {
-    Format,
-    Ir,
-    Run,
-    Compile,
-}
-
-macro_rules! input_error {
-    ($pat:expr) => {{
-        eprint!("{ANSII_COLOR_RED}argument error: ");
-        eprint!($pat);
-        eprintln!("{ANSII_CLEAR}");
-        eprintln!();
-        print_help();
-        return ExitCode::FAILURE;
-    }};
-}
-
 fn main() -> ExitCode {
-    let mut args = std::env::args();
-    _ = args.next();
-    let command = match args.next().as_deref() {
-        Some("format") => Command::Format,
-        Some("ir") => Command::Ir,
-        Some("run") => Command::Run,
-        Some("compile") => Command::Compile,
-        Some("help") => {
-            print_help();
-            return ExitCode::SUCCESS;
-        }
-        Some(a) => {
-            input_error!("invalid command: `{a}`");
-        }
-        None => {
-            input_error!("missing first positional argument <command>");
-        }
+    let (config, command, path) = match cli::parse_args() {
+        ControlFlow::Continue(c) => c,
+        ControlFlow::Break(e) => return e,
     };
 
-    let mut path = None;
-    let mut config = Config { verbose: 0 };
-    for a in args {
-        if let Some(n) = a.strip_prefix("--") {
-            match n {
-                "verbose" => config.verbose += 1,
-                _ => input_error!("unexpected argument `{a}`"),
-            }
-        } else if let Some(n) = a.strip_prefix('-') {
-            for c in n.chars() {
-                match c {
-                    'v' => config.verbose += 1,
-                    _ => input_error!("unexpected flag `{c}`"),
-                }
-            }
-        } else {
-            if path.is_some() {
-                input_error!("unexpected positional argument `{a}`");
-            }
-            path = Some(a);
-        }
-    }
-    let Some(path) = path else {
-        input_error!("missing second positional argument <path>");
-    };
     let input = std::fs::read_to_string(&path).unwrap();
     let bytes = input.as_bytes();
 
@@ -233,7 +170,7 @@ fn main() -> ExitCode {
         println!("============================================================");
     }
     if config.verbose >= 3 || command == Command::Format {
-        print_brainfuck_code(&instructions);
+        cli::print_brainfuck_code(&instructions);
         if command == Command::Format {
             return ExitCode::SUCCESS;
         }
@@ -308,7 +245,7 @@ fn main() -> ExitCode {
     }
 
     if config.verbose >= 3 || command == Command::Ir {
-        print_instructions(&instructions);
+        cli::print_instructions(&instructions);
         if command == Command::Ir {
             return ExitCode::SUCCESS;
         } else {
@@ -397,71 +334,6 @@ fn run(instructions: &[Instruction]) {
 
         ip += 1;
     }
-}
-
-fn print_brainfuck_code(instructions: &[Instruction]) {
-    let mut indent = 0;
-    for i in instructions.iter() {
-        if let Instruction::JumpNz(_) = i {
-            indent -= 1
-        }
-        for _ in 0..indent {
-            print!("    ");
-        }
-        match i {
-            Instruction::Shl(n) => println!("{:<<width$}", "", width = *n as usize),
-            Instruction::Shr(n) => println!("{:><width$}", "", width = *n as usize),
-            Instruction::Inc(n) => println!("{:+<width$}", "", width = *n as usize),
-            Instruction::Dec(n) => println!("{:-<width$}", "", width = *n as usize),
-            Instruction::Output => println!("."),
-            Instruction::Input => println!(","),
-            Instruction::JumpZ(_) => println!("["),
-            Instruction::JumpNz(_) => println!("]"),
-
-            Instruction::Zero(_) => unreachable!(),
-            Instruction::Add(_) => unreachable!(),
-            Instruction::Sub(_) => unreachable!(),
-            Instruction::AddMul(_, _) => unreachable!(),
-            Instruction::SubMul(_, _) => unreachable!(),
-        }
-        if let Instruction::JumpZ(_) = i {
-            indent += 1
-        }
-    }
-}
-
-fn print_instructions(instructions: &[Instruction]) {
-    let mut indent = 0;
-    for i in instructions.iter() {
-        if let Instruction::JumpNz(_) = i {
-            indent -= 1
-        }
-        for _ in 0..indent {
-            print!("    ");
-        }
-        println!("{i}");
-        if let Instruction::JumpZ(_) = i {
-            indent += 1
-        }
-    }
-}
-
-fn print_help() {
-    eprintln!(
-        "\
-brainfuck <mode> [<option>] <path>
-
-{ANSII_UNDERLINED}modes{ANSII_CLEAR}
-    format          pretty print brainfuck code
-    ir              print the intermediate representation
-    run             interpret the ir
-    compile         generate an ELF64 x86-64 system-v executable
-    help            print this help message
-
-{ANSII_UNDERLINED}options{ANSII_CLEAR}
-    -v,--verbose    change verbosity level via number of occurences [0..=3]
-    "
-    );
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
