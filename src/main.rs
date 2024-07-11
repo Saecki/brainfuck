@@ -1,6 +1,8 @@
 use std::cmp::PartialOrd;
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::num::NonZeroU32;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -312,7 +314,13 @@ fn main() -> ExitCode {
             let code = x86::compile(&instructions);
             let path: &Path = path.as_ref();
             let bin_path = path.with_extension("elf");
-            std::fs::write(&bin_path, &code).unwrap();
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .mode(0o755)
+                .open(bin_path)
+                .unwrap();
+            file.write(&code).unwrap();
         }
     }
 
