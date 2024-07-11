@@ -105,14 +105,22 @@ struct ElfFileHeader {
     e_machine: u16,
     e_version: u32,
     e_entry: u64,
+    /// program header offset
     e_phoff: u64,
+    /// section header offset
     e_shoff: u64,
     e_flags: u32,
+    /// size of this header
     e_ehsize: u16,
+    /// program header entry size
     e_phentsize: u16,
+    /// number of program header table entries
     e_phnum: u16,
+    /// section header entry size
     e_shentsize: u16,
+    /// number of section header table entries
     e_shnum: u16,
+    /// index of section header table entry that contains section names
     e_shstrndx: u16,
 }
 
@@ -128,11 +136,26 @@ struct ElfProgramHeader {
     p_align: u64,
 }
 
+#[macro_export]
+macro_rules! const_assert {
+    ($x:expr $(,)?) => {
+        #[allow(unknown_lints, eq_op)]
+        const _: [(); 0 - !{
+            const ASSERT: bool = $x;
+            ASSERT
+        } as usize] = [];
+    };
+}
+
 /// Generate a 64-bit x86 linux ELF binary
 pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
     const B64_ELF_HEADER_LEN: usize = 0x40;
     const B64_PROGRAM_HEADER_LEN: usize = 0x38;
-    const ENTRY_POINT: usize = B64_ELF_HEADER_LEN + B64_PROGRAM_HEADER_LEN;
+    const PROGRAM_OFFSET: usize = B64_ELF_HEADER_LEN + B64_PROGRAM_HEADER_LEN;
+    const VADDR: usize = 0x40_0000;
+
+    const_assert!(B64_ELF_HEADER_LEN == std::mem::size_of::<ElfFileHeader>());
+    const_assert!(B64_PROGRAM_HEADER_LEN == std::mem::size_of::<ElfProgramHeader>());
 
     let elf_header: [u8; B64_ELF_HEADER_LEN] = {
         let header = ElfFileHeader {
@@ -141,23 +164,23 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
             ei_class: 0x02, // 64-bit
             ei_data: 0x01,  // little-endian
             ei_version: 0x01,
-            ei_osabi: 0x03, // linux
+            ei_osabi: 0x00, // system-v
             ei_abiversion: 0x00,
             ei_pad: [0x00; 7], // reserved
 
             e_type: 0x0002,    // executable
             e_machine: 0x003E, // AMD x86-64
             e_version: 1,
-            e_entry: ENTRY_POINT as u64,         // entry point offset
-            e_phoff: B64_ELF_HEADER_LEN as u64, // program header table offset immediately follows the ELF header
+            e_entry: (VADDR + PROGRAM_OFFSET) as u64, // entry point offset
+            e_phoff: B64_ELF_HEADER_LEN as u64, // program header immediately follows the ELF header
             e_shoff: 0,                         // no table thus 0 offset
             e_flags: 0x0000_0000,               // no flags
-            e_ehsize: B64_ELF_HEADER_LEN as u16, // ELF header size is 64 (0x40) for 64-bit binaries
-            e_phentsize: B64_PROGRAM_HEADER_LEN as u16, //program header table size
-            e_phnum: 1,                         // program header table entry count
-            e_shentsize: 0,                     // no table thus irrelevant
-            e_shnum: 0,                         // no table thus 0 entries
-            e_shstrndx: 0, // section header table entry index that contains the section names
+            e_ehsize: B64_ELF_HEADER_LEN as u16,
+            e_phentsize: B64_PROGRAM_HEADER_LEN as u16,
+            e_phnum: 1,
+            e_shentsize: 0, // no table thus irrelevant
+            e_shnum: 0,     // no table thus 0 entries
+            e_shstrndx: 0,
         };
 
         unsafe { std::mem::transmute(header) }
@@ -165,14 +188,14 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
 
     let program_header: [u8; B64_PROGRAM_HEADER_LEN] = {
         let header = ElfProgramHeader {
-            p_type: 0x0000_0001,  // loadable segment
-            p_flags: 0x0000_0001, // executable
-            p_offset: 0,          // (includes the whole file)
-            p_vaddr: 0x1000,      // virtual address to place the segment at
-            p_paddr: 0x1000, // physical address is not used (just set it to the same as the virtual address)
+            p_type: 0x0000_0001,                      // loadable segment
+            p_flags: 0x0000_0007,                     // read write execute
+            p_offset: PROGRAM_OFFSET as u64,          // (includes the whole file)
+            p_vaddr: (VADDR + PROGRAM_OFFSET) as u64, // virtual address to place the segment at
+            p_paddr: 0,                               // physical address is not used
             p_filesz: 0,     // size of the whole file (write after code generation)
             p_memsz: 0,      // size of the whole file (write after code generation)
-            p_align: 1,      // no alignment
+            p_align: 0x1000, // no alignment
         };
 
         unsafe { std::mem::transmute(header) }
@@ -398,12 +421,12 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
 
     // update loadable segment size
     {
-        let size = code.len() as u64;
+        let size = code.len() as u64 - PROGRAM_OFFSET as u64;
         let program_header = &mut code[B64_ELF_HEADER_LEN..][..B64_PROGRAM_HEADER_LEN];
-        // p_filesz: size of the whole file
-        program_header[0x20..0x28].copy_from_slice(&u64::to_le_bytes(size));
-        // p_memsz: size of the whole file
-        program_header[0x28..0x30].copy_from_slice(&u64::to_le_bytes(size));
+        const P_FILESZ: usize = std::mem::offset_of!(ElfProgramHeader, p_filesz);
+        program_header[P_FILESZ..P_FILESZ + 8].copy_from_slice(&u64::to_le_bytes(size));
+        const P_MEMSZ: usize = std::mem::offset_of!(ElfProgramHeader, p_memsz);
+        program_header[P_MEMSZ..P_MEMSZ + 8].copy_from_slice(&u64::to_le_bytes(size));
     }
 
     code
