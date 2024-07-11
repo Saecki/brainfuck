@@ -273,8 +273,8 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
             Instruction::Output => {
                 // `C7 /0 id`: move immediate value to `eax`
                 let modrm = const { ext_modrm(ModRm::Register(Reg::Eax), 0) };
-                const WRITE_SYSCALL: u32 = 1;
-                let [b0, b1, b2, b3] = u32::to_le_bytes(WRITE_SYSCALL);
+                const SYSCALL_WRITE: u32 = 1;
+                let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_WRITE);
                 write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
 
                 // `C7 /0 id`: move immediate value to `edi`
@@ -418,6 +418,19 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
             }
         }
     }
+
+    // `C7 /0 id`: move immediate value to `eax`
+    let modrm = const { ext_modrm(ModRm::Register(Reg::Eax), 0) };
+    const SYSCALL_EXIT: u32 = 93;
+    let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_EXIT);
+    write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
+
+    // `31 /r`: clear the edi register
+    let modrm = normal_modrm(ModRm::Register(Reg::Edi), Reg::Edi);
+    write_instruction(&mut code, [0x31, modrm]);
+
+    // `0F 05`: SYSCALL - fast system call
+    write_instruction(&mut code, [0x0F, 0x05]);
 
     // update loadable segment size
     {
