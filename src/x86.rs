@@ -311,7 +311,44 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
                 write_instruction(&mut code, [0x8F, modrm]);
             }
-            Instruction::Input => todo!(),
+            Instruction::Input => {
+                // `REX.W C7 /0 id`: move immediate value to `rax`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
+                const SYSCALL_READ: u32 = 0;
+                let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_READ);
+                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+
+                // `REX.W C7 /0 id`: move immediate value to `rdi`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdi), 0) };
+                const STDIN_FD: u32 = 0;
+                let [b0, b1, b2, b3] = u32::to_le_bytes(STDIN_FD);
+                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+
+                // write address of string to `rsi`
+                // `REX.W 89 /r`: move from `rsp` to `rsi`
+                let modrm = const { normal_modrm(ModRm::Register(Reg::Rsi), Reg::Rsp) };
+                write_instruction(&mut code, [REXW, 0x89, modrm]);
+                // `REX.W 01 /r`: add `rcx` to `rsi`
+                let modrm = const { normal_modrm(ModRm::Register(Reg::Rsi), Reg::Rcx) };
+                write_instruction(&mut code, [REXW, 0x01, modrm]);
+
+                // `REX.W C7 /0 id`: move immediate value to `rdx`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 0) };
+                const STRING_LEN: u32 = 1;
+                let [b0, b1, b2, b3] = u32::to_le_bytes(STRING_LEN);
+                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+
+                // `FF /6`: push rcx onto the stack
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 6) };
+                write_instruction(&mut code, [0xFF, modrm]);
+
+                // `0F 05`: SYSCALL - fast system call
+                write_instruction(&mut code, [0x0F, 0x05]);
+
+                // `8F /0`: pop rcx off the stack
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
+                write_instruction(&mut code, [0x8F, modrm]);
+            }
             Instruction::JumpZ(jump) => {
                 let redundant = jump.is_redundant();
                 if !redundant {
