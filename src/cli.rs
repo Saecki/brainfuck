@@ -74,7 +74,7 @@ pub fn parse_args() -> ControlFlow<ExitCode, (Config, Command, PathBuf)> {
                 "no-optimize-zeroes" => config.o_zeros = false,
                 "no-optimize-arithmetic" => config.o_arithmetic = false,
                 "no-optimize-jumps" => config.o_jumps = false,
-                "no-optimize-dead_code" => config.o_dead_code = false,
+                "no-optimize-dead-code" => config.o_dead_code = false,
                 _ => input_error!("unexpected argument `{a}`"),
             }
         } else if let Some(n) = a.strip_prefix('-') {
@@ -112,7 +112,12 @@ brainfuck <mode> [<option>] <path>
     help            print this help message
 
 {ANSII_UNDERLINED}options{ANSII_CLEAR}
-    -v,--verbose    change verbosity level via number of occurences [0..=3]
+    -v,--verbose                change verbosity level via number of occurences [0..=3]
+    -d,--debug                  disable all optimizations
+       --no-optimize-zeros      disable zeroing optimization
+       --no-optimize-arithmetic disable arithmetic optimizations
+       --no-optimize-jumps      disable redundant jump elmination
+       --no-optimize-dead-code  disable dead code elmination
     "
     );
 }
