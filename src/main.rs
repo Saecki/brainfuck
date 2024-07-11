@@ -389,14 +389,14 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
     for (j, inst) in instructions[start..].iter().enumerate() {
         match inst {
             JumpZ(_) => break,
-            JumpNz(_) => {
-                end = Some(start + j);
+            JumpNz(jump) => {
+                end = Some((jump, start + j));
                 break;
             }
             _ => (),
         }
     }
-    let Some(end) = end else { return };
+    let Some((end_jump, end)) = end else { return };
     let inner = &instructions[start..end];
     let mut offset = 0;
     let mut num_arith = 0;
@@ -451,9 +451,11 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
             return;
         }
         IterationDiff::Diff(0) | IterationDiff::ZeroedDiff(_) => {
-            let range = start - 1..end + 1;
-            let l = &instructions[range.clone()];
-            eprintln!("{ANSII_COLOR_YELLOW}warning{ANSII_CLEAR}: infinite loop detected at {range:?}:\n{l:?}");
+            if !end_jump.is_redundant() {
+                let range = start - 1..end + 1;
+                let l = &instructions[range.clone()];
+                eprintln!("{ANSII_COLOR_YELLOW}warning{ANSII_CLEAR}: infinite loop detected at {range:?}:\n{l:?}");
+            }
             return;
         }
         IterationDiff::Diff(_) => return,
@@ -489,7 +491,11 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
             }
             Zero(o) => {
                 if offset + o != 0 {
-                    replacements.push(Zero(offset + o));
+                    replacements.extend([
+                        JumpZ(Jump::Location(NonZeroU32::MAX)),
+                        Zero(offset + o),
+                        JumpNz(Jump::Redundant),
+                    ]);
                 }
             }
             Output | Input | JumpZ(_) | JumpNz(_) | Add(_) | Sub(_) | AddMul(..) | SubMul(..) => {
