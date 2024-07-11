@@ -234,7 +234,9 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
         let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 7) };
         write_instruction(&mut code, [0x83, modrm, 0x00]);
 
-        let loop_end = code.len();
+        // the instruction pointer will have already moved to the next instruction, so it will be
+        // after the jump instruction
+        let loop_end = code.len() + 2;
         // `75 cb`: jump if not 0
         let [rel_jump] = i8::to_le_bytes((loop_start as isize - loop_end as isize) as i8);
         write_instruction(&mut code, [0x75, rel_jump]);
@@ -311,7 +313,6 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
             }
             Instruction::Input => todo!(),
             Instruction::JumpZ(jump) => {
-                let pos = code.len();
                 let redundant = jump.is_redundant();
                 if !redundant {
                     // `80 /7 ib`: cmp with `0`
@@ -324,6 +325,7 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                     write_instruction(&mut code, [0x0F, 0x84, b0, b1, b2, b3]);
                 }
 
+                let pos = code.len();
                 jump_stack.push((redundant, pos));
             }
             Instruction::JumpNz(jump) => {
@@ -331,11 +333,10 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                     unreachable!()
                 };
 
-                let pos = code.len();
-                let offset = pos as i32 - start_pos as i32;
                 let redundant = jump.is_redundant();
                 if !redundant {
-                    let offset = offset - (10 * start_redundant as i32);
+                    let pos = code.len();
+                    let offset = start_pos as i32 - pos as i32 - 10;
 
                     // `80 /7 ib`: cmp with `0`
                     let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 7) };
