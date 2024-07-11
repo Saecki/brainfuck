@@ -419,6 +419,11 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
                     num_arith += 1;
                 }
             }
+            // FIXME: If this zeros the same register an Inc() or Dec() inside this loop,
+            // check if the other instruction is run before or after.
+            // If before, remove it.
+            // If after, don't replace it with an (Add | Sub | AddMul | SubMul), just move it
+            // outside the loop in the conditional with the zeroing instruction.
             Zero(o) => {
                 if offset + o == 0 {
                     iteration_diff.zero();
