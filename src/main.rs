@@ -176,10 +176,10 @@ fn main() -> ExitCode {
         }
     }
 
-    if !config.debug {
+    if config.optimize {
         let prev_len = instructions.len();
         // zero register
-        {
+        if config.o_zeros {
             use Instruction::*;
 
             let mut i = 0;
@@ -200,7 +200,7 @@ fn main() -> ExitCode {
             }
         }
         // arithmetic instructions
-        {
+        if config.o_arithmetic || config.o_jumps {
             let mut i = 0;
             while i < instructions.len() {
                 arithmetic_loop_pass(&config, &mut instructions, i);
@@ -208,7 +208,9 @@ fn main() -> ExitCode {
             }
         }
 
-        dead_code_elimination(&config, &mut instructions);
+        if config.o_dead_code {
+            dead_code_elimination(&config, &mut instructions);
+        }
 
         if config.verbose >= 1 {
             println!("============================================================");
@@ -436,23 +438,29 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
 
     match iteration_diff {
         IterationDiff::Diff(-1) => (),
-        IterationDiff::Diff(_) => return,
         IterationDiff::Zeroed | IterationDiff::ZeroedDiff(0) => {
-            let JumpNz(jump) = &mut instructions[end] else {
-                unreachable!();
-            };
-            *jump = Jump::Redundant;
-            if config.verbose >= 2 {
-                println!("redundant conditional jump at {}", end);
+            if config.o_jumps {
+                let JumpNz(jump) = &mut instructions[end] else {
+                    unreachable!();
+                };
+                *jump = Jump::Redundant;
+                if config.verbose >= 2 {
+                    println!("redundant conditional jump at {}", end);
+                }
             }
             return;
         }
-        IterationDiff::ZeroedDiff(_) => {
+        IterationDiff::Diff(0) | IterationDiff::ZeroedDiff(_) => {
             let range = start - 1..end + 1;
             let l = &instructions[range.clone()];
             eprintln!("{ANSII_COLOR_YELLOW}warning{ANSII_CLEAR}: infinite loop detected at {range:?}:\n{l:?}");
             return;
         }
+        IterationDiff::Diff(_) => return,
+    }
+
+    if !config.o_arithmetic {
+        return;
     }
 
     let mut offset = 0;

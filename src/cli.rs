@@ -11,7 +11,11 @@ pub const ANSII_COLOR_YELLOW: &str = "\x1b[93m";
 
 pub struct Config {
     pub verbose: u8,
-    pub debug: bool,
+    pub optimize: bool,
+    pub o_zeros: bool,
+    pub o_arithmetic: bool,
+    pub o_jumps: bool,
+    pub o_dead_code: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,20 +60,28 @@ pub fn parse_args() -> ControlFlow<ExitCode, (Config, Command, PathBuf)> {
     let mut path = None;
     let mut config = Config {
         verbose: 0,
-        debug: false,
+        optimize: true,
+        o_zeros: true,
+        o_arithmetic: true,
+        o_jumps: true,
+        o_dead_code: true,
     };
     for a in args {
         if let Some(n) = a.strip_prefix("--") {
             match n {
                 "verbose" => config.verbose += 1,
-                "debug" => config.debug = true,
+                "debug" => config.optimize = false,
+                "no-optimize-zeroes" => config.o_zeros = false,
+                "no-optimize-arithmetic" => config.o_arithmetic = false,
+                "no-optimize-jumps" => config.o_jumps = false,
+                "no-optimize-dead_code" => config.o_dead_code = false,
                 _ => input_error!("unexpected argument `{a}`"),
             }
         } else if let Some(n) = a.strip_prefix('-') {
             for c in n.chars() {
                 match c {
                     'v' => config.verbose += 1,
-                    'd' => config.debug = true,
+                    'd' => config.optimize = false,
                     _ => input_error!("unexpected flag `{c}`"),
                 }
             }
