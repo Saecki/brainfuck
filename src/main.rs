@@ -176,48 +176,50 @@ fn main() -> ExitCode {
         }
     }
 
-    let prev_len = instructions.len();
-    // zero register
-    {
-        use Instruction::*;
+    if !config.debug {
+        let prev_len = instructions.len();
+        // zero register
+        {
+            use Instruction::*;
 
-        let mut i = 0;
-        while i + 3 < instructions.len() {
-            let [a, b, c] = &instructions[i..i + 3] else {
-                unreachable!()
-            };
-            if let (JumpZ(_), Dec(1), JumpNz(_)) = (a, b, c) {
-                let range = i..i + 3;
-                if config.verbose >= 2 {
-                    println!("replaced {range:?} with zero");
+            let mut i = 0;
+            while i + 3 < instructions.len() {
+                let [a, b, c] = &instructions[i..i + 3] else {
+                    unreachable!()
+                };
+                if let (JumpZ(_), Dec(1), JumpNz(_)) = (a, b, c) {
+                    let range = i..i + 3;
+                    if config.verbose >= 2 {
+                        println!("replaced {range:?} with zero");
+                    }
+                    instructions.drain(range);
+                    instructions.insert(i, Zero(0));
                 }
-                instructions.drain(range);
-                instructions.insert(i, Zero(0));
+
+                i += 1;
             }
-
-            i += 1;
         }
-    }
-    // arithmetic instructions
-    {
-        let mut i = 0;
-        while i < instructions.len() {
-            arithmetic_loop_pass(&config, &mut instructions, i);
-            i += 1;
+        // arithmetic instructions
+        {
+            let mut i = 0;
+            while i < instructions.len() {
+                arithmetic_loop_pass(&config, &mut instructions, i);
+                i += 1;
+            }
         }
-    }
 
-    dead_code_elimination(&config, &mut instructions);
+        dead_code_elimination(&config, &mut instructions);
 
-    if config.verbose >= 1 {
-        println!("============================================================");
-        println!(
-            "instructions before {} after: {} ({:.3}%)",
-            prev_len,
-            instructions.len(),
-            100.0 * instructions.len() as f32 / prev_len as f32,
-        );
-        println!("============================================================");
+        if config.verbose >= 1 {
+            println!("============================================================");
+            println!(
+                "instructions before {} after: {} ({:.3}%)",
+                prev_len,
+                instructions.len(),
+                100.0 * instructions.len() as f32 / prev_len as f32,
+            );
+            println!("============================================================");
+        }
     }
 
     // update jump indices

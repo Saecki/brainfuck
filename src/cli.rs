@@ -11,6 +11,7 @@ pub const ANSII_COLOR_YELLOW: &str = "\x1b[93m";
 
 pub struct Config {
     pub verbose: u8,
+    pub debug: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,17 +54,22 @@ pub fn parse_args() -> ControlFlow<ExitCode, (Config, Command, PathBuf)> {
     };
 
     let mut path = None;
-    let mut config = Config { verbose: 0 };
+    let mut config = Config {
+        verbose: 0,
+        debug: false,
+    };
     for a in args {
         if let Some(n) = a.strip_prefix("--") {
             match n {
                 "verbose" => config.verbose += 1,
+                "debug" => config.debug = true,
                 _ => input_error!("unexpected argument `{a}`"),
             }
         } else if let Some(n) = a.strip_prefix('-') {
             for c in n.chars() {
                 match c {
                     'v' => config.verbose += 1,
+                    'd' => config.debug = true,
                     _ => input_error!("unexpected flag `{c}`"),
                 }
             }
