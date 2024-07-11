@@ -31,39 +31,39 @@ impl ModRm {
 /// R/M value for indirect addressing mode
 #[derive(Clone, Copy)]
 pub enum RmI {
-    RegEax = 0b000,
-    RegEcx = 0b001,
-    RegEdx = 0b010,
-    RegEbx = 0b011,
+    RegRax = 0b000,
+    RegRcx = 0b001,
+    RegRdx = 0b010,
+    RegRbx = 0b011,
     Sib = 0b100,
     Disp4byte = 0b101,
-    RegEsi = 0b110,
-    RegEdi = 0b111,
+    RegRsi = 0b110,
+    RegRdi = 0b111,
 }
 
 /// R/M value for indirect addressing mode with displacement
 #[derive(Clone, Copy)]
 pub enum RmID {
-    RegEax = 0b000,
-    RegEcx = 0b001,
-    RegEdx = 0b010,
-    RegEbx = 0b011,
+    RegRax = 0b000,
+    RegRcx = 0b001,
+    RegRdx = 0b010,
+    RegRbx = 0b011,
     Sib = 0b100,
-    RegEbp = 0b101,
-    RegEsi = 0b110,
-    RegEdi = 0b111,
+    RegRbp = 0b101,
+    RegRsi = 0b110,
+    RegRdi = 0b111,
 }
 
 #[derive(Clone, Copy)]
 pub enum Reg {
-    Eax = 0x0,
-    Ecx = 0x1,
-    Edx = 0x2,
-    Ebx = 0x3,
-    Esp = 0x4,
-    Ebp = 0x5,
-    Esi = 0x6,
-    Edi = 0x7,
+    Rax = 0x0,
+    Rcx = 0x1,
+    Rdx = 0x2,
+    Rbx = 0x3,
+    Rsp = 0x4,
+    Rbp = 0x5,
+    Rsi = 0x6,
+    Rdi = 0x7,
 }
 
 /// Generate a `MOD-REG_R/M` byte with a `reg` field
@@ -206,31 +206,32 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
         .collect();
 
     // prepare brainfuck registers
+    const REXW: u8 = 0x48;
     {
-        // `81 /5 id`: allocate stack space for 30000 elements
-        let modrm = const { ext_modrm(ModRm::Register(Reg::Esp), 5) };
+        // `REX.W 81 /5 id`: allocate stack space for 32768 elements
+        let modrm = const { ext_modrm(ModRm::Register(Reg::Rsp), 5) };
         let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_REGISTERS as u32);
-        write_instruction(&mut code, [0x81, modrm, b0, b1, b2, b3]);
+        write_instruction(&mut code, [REXW, 0x81, modrm, b0, b1, b2, b3]);
 
-        // `C7 /0 id`: write ITERATIONS to `ecx`
-        const NUM_ITERATIONS: u32 = NUM_REGISTERS as u32 / 4;
-        let modrm = const { ext_modrm(ModRm::Register(Reg::Ecx), 0) };
+        // `REX.W C7 /0 id`: write ITERATIONS to `rcx`
+        const NUM_ITERATIONS: u32 = NUM_REGISTERS as u32 / 8;
+        let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
         let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_ITERATIONS);
-        write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
+        write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
 
         let loop_start = code.len();
         // `83 /5 ib`: subtract 1 from `ecx`
-        let modrm = const { ext_modrm(ModRm::Register(Reg::Ecx), 5) };
+        let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 5) };
         write_instruction(&mut code, [0x83, modrm, 0x1]);
 
-        // `C7 /0 id`: write 0u32 to stack at `esp + 4 * ecx` using a scaled index byte (SIB)
+        // `REX.W C7 /0 id`: write 0u32 to stack at `rsp + 8 * rcx` using a scaled index byte (SIB)
         let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 0) };
-        let sib = const { gen_sib(Scale::B4, Reg::Ecx, Reg::Esp) };
+        let sib = const { gen_sib(Scale::B8, Reg::Rcx, Reg::Rsp) };
         let [b0, b1, b2, b3] = u32::to_le_bytes(0);
-        write_instruction(&mut code, [0xC7, modrm, sib, b0, b1, b2, b3]);
+        write_instruction(&mut code, [REXW, 0xC7, modrm, sib, b0, b1, b2, b3]);
 
         // `83 /7 ib`: cmp `ecx` to `0`
-        let modrm = const { ext_modrm(ModRm::Register(Reg::Ecx), 7) };
+        let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 7) };
         write_instruction(&mut code, [0x83, modrm, 0x00]);
 
         let loop_end = code.len();
@@ -249,56 +250,64 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
             Instruction::Shl(n) => {
                 // `81 /5 id`: sub immediate value from `ecx`
                 let [b0, b1] = u16::to_le_bytes(*n);
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Ecx), 5) };
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 5) };
                 write_instruction(&mut code, [0x81, modrm, b0, b1, 0, 0]);
             }
             Instruction::Shr(n) => {
                 // `81 /0 id`: add immediate value to `ecx`
                 let [b0, b1] = u16::to_le_bytes(*n);
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Ecx), 0) };
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
                 write_instruction(&mut code, [0x81, modrm, b0, b1, 0, 0]);
             }
             Instruction::Inc(n) => {
                 // `80 /0 ib`: add immediate value to `esp + 1 * ecx`
                 let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 0) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 write_instruction(&mut code, [0x80, modrm, sib, *n]);
             }
             Instruction::Dec(n) => {
                 // `80 /5 ib`: add immediate value to `esp + 1 * ecx`
                 let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 5) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 write_instruction(&mut code, [0x80, modrm, sib, *n]);
             }
             Instruction::Output => {
-                // `C7 /0 id`: move immediate value to `eax`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Eax), 0) };
+                // `REX.W C7 /0 id`: move immediate value to `rax`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
                 const SYSCALL_WRITE: u32 = 1;
                 let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_WRITE);
-                write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
+                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
 
-                // `C7 /0 id`: move immediate value to `edi`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Edi), 0) };
+                // `REX.W C7 /0 id`: move immediate value to `rdi`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdi), 0) };
                 const STDOUT_FD: u32 = 1;
                 let [b0, b1, b2, b3] = u32::to_le_bytes(STDOUT_FD);
-                write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
+                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
 
-                // write address of string to `esi`
-                // `89 /r`: move from `esp` to `esi`
-                let modrm = const { normal_modrm(ModRm::Register(Reg::Esi), Reg::Esp) };
-                write_instruction(&mut code, [0x89, modrm]);
-                // `01 /r`: add `ecx` to `esi`
-                let modrm = const { normal_modrm(ModRm::Register(Reg::Esi), Reg::Ecx) };
-                write_instruction(&mut code, [0x01, modrm]);
+                // write address of string to `rsi`
+                // `REX.W 89 /r`: move from `rsp` to `rsi`
+                let modrm = const { normal_modrm(ModRm::Register(Reg::Rsi), Reg::Rsp) };
+                write_instruction(&mut code, [REXW, 0x89, modrm]);
+                // `REX.W 01 /r`: add `rcx` to `rsi`
+                let modrm = const { normal_modrm(ModRm::Register(Reg::Rsi), Reg::Rcx) };
+                write_instruction(&mut code, [REXW, 0x01, modrm]);
 
-                // `C7 /0 id`: move immediate value to `edx`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Edx), 0) };
+                // `REX.W C7 /0 id`: move immediate value to `rdx`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 0) };
                 const STRING_LEN: u32 = 1;
                 let [b0, b1, b2, b3] = u32::to_le_bytes(STRING_LEN);
-                write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
+                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+
+                // `FF /6`: push rcx onto the stack
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 6) };
+                write_instruction(&mut code, [0xFF, modrm]);
 
                 // `0F 05`: SYSCALL - fast system call
                 write_instruction(&mut code, [0x0F, 0x05]);
+
+                // `8F /0`: pop rcx off the stack
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
+                write_instruction(&mut code, [0x8F, modrm]);
             }
             Instruction::Input => todo!(),
             Instruction::JumpZ(jump) => {
@@ -307,7 +316,7 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 if !redundant {
                     // `80 /7 ib`: cmp with `0`
                     let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 7) };
-                    let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                    let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                     write_instruction(&mut code, [0x80, modrm, sib, 0x00]);
 
                     // `0F 84 cd`: jump if zero
@@ -330,7 +339,7 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
 
                     // `80 /7 ib`: cmp with `0`
                     let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 7) };
-                    let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                    let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                     write_instruction(&mut code, [0x80, modrm, sib, 0x00]);
 
                     // `0F 85 cd`: jump if not zero
@@ -339,95 +348,108 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 }
 
                 if !start_redundant {
-                    let offset = offset + (10 * (!redundant) as i32);
-                    code[start_pos + 6..start_pos + 10].copy_from_slice(&i32::to_le_bytes(offset));
+                    let pos = code.len();
+                    let offset = pos as i32 - start_pos as i32;
+                    code[start_pos - 4..start_pos].copy_from_slice(&i32::to_le_bytes(offset));
                 }
             }
 
             // TODO: use Indirect or Indirect1ByteDisp addressing modes if possible to save space
             Instruction::Zero(disp) => {
-                // `C6 /0 ib`: move immediate value to `esp + 1 * ecx + disp` using sib and disp
-                let modrm = const { ext_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), 0) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
-                let [b0, b1, b2, b3] = i32::to_le_bytes(*disp as i32);
-                write_instruction(&mut code, [0xC6, modrm, sib, b0, b1, b2, b3, 0x00]);
+                if *disp == 0 {
+                    // `C6 /0 ib`: move immediate value to `esp + 1 * ecx` using sib
+                    let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 0) };
+                    let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
+                    write_instruction(&mut code, [0xC6, modrm, sib, 0x00]);
+                } else {
+                    // `C6 /0 ib`: move immediate value to `esp + 1 * ecx + disp` using sib and disp
+                    let modrm = const { ext_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), 0) };
+                    let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
+                    let [b0, b1, b2, b3] = i32::to_le_bytes(*disp as i32);
+                    write_instruction(&mut code, [0xC6, modrm, sib, b0, b1, b2, b3, 0x00]);
+                }
             }
             Instruction::Add(disp) => {
                 // `8A /r`: move from `esp + 1 * ecx` to `al` using sib
-                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Eax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 write_instruction(&mut code, [0x8A, modrm, sib]);
 
                 // `00 /r`: add `al` to `esp + 1 * ecx + disp` using sib and disp
-                let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Eax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 let [b0, b1, b2, b3] = i32::to_le_bytes(*disp as i32);
                 write_instruction(&mut code, [0x00, modrm, sib, b0, b1, b2, b3]);
             }
             Instruction::Sub(disp) => {
                 // `8A /r`: move from `esp + 1 * ecx` to `al` using sib
-                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Eax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 write_instruction(&mut code, [0x8A, modrm, sib]);
 
                 // `28 /r`: subtract `al` from `esp + 1 * ecx + disp` using sib and disp
-                let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Eax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 let [b0, b1, b2, b3] = i32::to_le_bytes(*disp as i32);
                 write_instruction(&mut code, [0x28, modrm, sib, b0, b1, b2, b3]);
             }
             Instruction::AddMul(disp, n) => {
                 // `8A /r`: move from `esp + 1 * ecx` to `al` using sib
-                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Eax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 write_instruction(&mut code, [0x8A, modrm, sib]);
 
                 // `C6 /0 ib`: move immediate value `dl`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Edx), 0) };
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 0) };
                 write_instruction(&mut code, [0xC6, modrm, *n]);
 
                 // `F6 /4`: multiply `al` with `dl` into `eax`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Edx), 4) };
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 4) };
                 write_instruction(&mut code, [0xF6, modrm]);
 
                 // `00 /r`: add `al` to `esp + 1 * ecx + disp` using sib and disp
-                let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Eax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 let [b0, b1, b2, b3] = i32::to_le_bytes(*disp as i32);
                 write_instruction(&mut code, [0x00, modrm, sib, b0, b1, b2, b3]);
             }
             Instruction::SubMul(disp, n) => {
                 // `8A /r`: move from `esp + 1 * ecx` to `al` using sib
-                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Eax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 write_instruction(&mut code, [0x8A, modrm, sib]);
 
                 // `C6 /0 ib`: move immediate value `dl`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Edx), 0) };
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 0) };
                 write_instruction(&mut code, [0xC6, modrm, *n]);
 
-                // `F6 /4`: multiply `al` with `dl` into `eax`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Edx), 4) };
+                // `F6 /4`: multiply `al` with `dl` into `ax`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 4) };
                 write_instruction(&mut code, [0xF6, modrm]);
 
                 // `28 /r`: subtract `al` from `esp + 1 * ecx + disp` using sib and disp
-                let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Eax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Ecx, Reg::Esp) };
+                let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
                 let [b0, b1, b2, b3] = i32::to_le_bytes(*disp as i32);
                 write_instruction(&mut code, [0x28, modrm, sib, b0, b1, b2, b3]);
             }
         }
     }
 
+    // `81 /0 id`: pop stack
+    let modrm = const { ext_modrm(ModRm::Register(Reg::Rsp), 0) };
+    let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_REGISTERS as u32);
+    write_instruction(&mut code, [REXW, 0x81, modrm, b0, b1, b2, b3]);
+
     // `C7 /0 id`: move immediate value to `eax`
-    let modrm = const { ext_modrm(ModRm::Register(Reg::Eax), 0) };
+    let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
     const SYSCALL_EXIT: u32 = 60;
     let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_EXIT);
-    write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
+    write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
 
     // `31 /r`: clear the edi register
-    let modrm = normal_modrm(ModRm::Register(Reg::Edi), Reg::Edi);
-    write_instruction(&mut code, [0x31, modrm]);
+    let modrm = normal_modrm(ModRm::Register(Reg::Rdi), Reg::Rdi);
+    write_instruction(&mut code, [REXW, 0x31, modrm]);
 
     // `0F 05`: SYSCALL - fast system call
     write_instruction(&mut code, [0x0F, 0x05]);

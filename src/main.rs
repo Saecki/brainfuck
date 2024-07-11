@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 pub mod x86;
 
-const NUM_REGISTERS: usize = 30000;
+const NUM_REGISTERS: usize = 1 << 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Token {
