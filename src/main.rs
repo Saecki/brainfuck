@@ -10,6 +10,11 @@ pub mod x86;
 
 const NUM_REGISTERS: usize = 1 << 15;
 
+const ANSII_CLEAR: &str = "\x1b[0m";
+const ANSII_UNDERLINED: &str = "\x1b[4m";
+const ANSII_COLOR_RED: &str = "\x1b[91m";
+const ANSII_COLOR_YELLOW: &str = "\x1b[93m";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Token {
     Shl,
@@ -121,6 +126,17 @@ enum Command {
     Compile,
 }
 
+macro_rules! input_error {
+    ($pat:expr) => {{
+        eprint!("{ANSII_COLOR_RED}argument error: ");
+        eprint!($pat);
+        eprintln!("{ANSII_CLEAR}");
+        eprintln!();
+        print_help();
+        return ExitCode::FAILURE;
+    }};
+}
+
 fn main() -> ExitCode {
     let mut args = std::env::args();
     _ = args.next();
@@ -129,13 +145,15 @@ fn main() -> ExitCode {
         Some("ir") => Command::Ir,
         Some("run") => Command::Run,
         Some("compile") => Command::Compile,
+        Some("help") => {
+            print_help();
+            return ExitCode::SUCCESS;
+        }
         Some(a) => {
-            eprintln!("invalid command: `{a}`");
-            return ExitCode::FAILURE;
+            input_error!("invalid command: `{a}`");
         }
         None => {
-            eprintln!("missing first positional argument <command>");
-            return ExitCode::FAILURE;
+            input_error!("missing first positional argument <command>");
         }
     };
 
@@ -145,32 +163,24 @@ fn main() -> ExitCode {
         if let Some(n) = a.strip_prefix("--") {
             match n {
                 "verbose" => config.verbose += 1,
-                _ => {
-                    eprintln!("unexpected argument `{a}`");
-                    return ExitCode::FAILURE;
-                }
+                _ => input_error!("unexpected argument `{a}`"),
             }
         } else if let Some(n) = a.strip_prefix('-') {
             for c in n.chars() {
                 match c {
                     'v' => config.verbose += 1,
-                    _ => {
-                        eprintln!("unexpected flag `{c}`");
-                        return ExitCode::FAILURE;
-                    }
+                    _ => input_error!("unexpected flag `{c}`"),
                 }
             }
         } else {
             if path.is_some() {
-                eprintln!("unexpected positional argument `{a}`");
-                return ExitCode::FAILURE;
+                input_error!("unexpected positional argument `{a}`");
             }
             path = Some(a);
         }
     }
     let Some(path) = path else {
-        eprintln!("missing second positional argument <path>");
-        return ExitCode::FAILURE;
+        input_error!("missing second positional argument <path>");
     };
     let input = std::fs::read_to_string(&path).unwrap();
     let bytes = input.as_bytes();
@@ -436,6 +446,24 @@ fn print_instructions(instructions: &[Instruction]) {
     }
 }
 
+fn print_help() {
+    eprintln!(
+        "\
+brainfuck <mode> [<option>] <path>
+
+{ANSII_UNDERLINED}modes{ANSII_CLEAR}
+    format          pretty print brainfuck code
+    ir              print the intermediate representation
+    run             interpret the ir
+    compile         generate an ELF64 x86-64 system-v executable
+    help            print this help message
+
+{ANSII_UNDERLINED}options{ANSII_CLEAR}
+    -v,--verbose    change verbosity level via number of occurences [0..=3]
+    "
+    );
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IterationDiff {
     /// The change each loop iteration will have on the iteration register.
@@ -547,7 +575,7 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
         IterationDiff::ZeroedDiff(_) => {
             let range = start - 1..end + 1;
             let l = &instructions[range.clone()];
-            println!("\x1b[93mwarning\x1b[0m: infinite loop detected at {range:?}:\n{l:?}");
+            eprintln!("{ANSII_COLOR_YELLOW}warning{ANSII_CLEAR}: infinite loop detected at {range:?}:\n{l:?}");
             return;
         }
     }
