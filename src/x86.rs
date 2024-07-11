@@ -275,13 +275,13 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 let modrm = const { ext_modrm(ModRm::Register(Reg::Eax), 0) };
                 const SYSCALL_WRITE: u32 = 1;
                 let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_WRITE);
-                write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
+                write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
 
                 // `C7 /0 id`: move immediate value to `edi`
                 let modrm = const { ext_modrm(ModRm::Register(Reg::Edi), 0) };
                 const STDOUT_FD: u32 = 1;
                 let [b0, b1, b2, b3] = u32::to_le_bytes(STDOUT_FD);
-                write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
+                write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
 
                 // write address of string to `esi`
                 // `89 /r`: move from `esp` to `esi`
@@ -295,7 +295,7 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 let modrm = const { ext_modrm(ModRm::Register(Reg::Edx), 0) };
                 const STRING_LEN: u32 = 1;
                 let [b0, b1, b2, b3] = u32::to_le_bytes(STRING_LEN);
-                write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
+                write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
 
                 // `0F 05`: SYSCALL - fast system call
                 write_instruction(&mut code, [0x0F, 0x05]);
@@ -421,9 +421,9 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
 
     // `C7 /0 id`: move immediate value to `eax`
     let modrm = const { ext_modrm(ModRm::Register(Reg::Eax), 0) };
-    const SYSCALL_EXIT: u32 = 93;
+    const SYSCALL_EXIT: u32 = 60;
     let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_EXIT);
-    write_instruction(&mut code, [0xC6, modrm, b0, b1, b2, b3]);
+    write_instruction(&mut code, [0xC7, modrm, b0, b1, b2, b3]);
 
     // `31 /r`: clear the edi register
     let modrm = normal_modrm(ModRm::Register(Reg::Edi), Reg::Edi);
