@@ -326,7 +326,7 @@ fn main() -> ExitCode {
                 .mode(0o755)
                 .open(bin_path)
                 .unwrap();
-            file.write(&code).unwrap();
+            file.write_all(&code).unwrap();
         }
     }
 
