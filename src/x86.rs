@@ -501,18 +501,14 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 write_instruction(&mut code, [0x28, modrm, sib, b0, b1, b2, b3]);
             }
             Instruction::AddMul(disp, n) => {
-                // `8A /r`: move from `esp + 1 * ecx` to `al` using sib
-                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                write_instruction(&mut code, [0x8A, modrm, sib]);
-
-                // `C6 /0 ib`: move immediate value `dl`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 0) };
+                // `C6 /0 ib`: move immediate value `al`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
                 write_instruction(&mut code, [0xC6, modrm, n]);
 
-                // `F6 /4`: multiply `al` with `dl` into `eax`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 4) };
-                write_instruction(&mut code, [0xF6, modrm]);
+                // `F6 /4`: multiply `al` with `esp + 1 * ecx` into `ax`
+                let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 4) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
+                write_instruction(&mut code, [0xF6, modrm, sib]);
 
                 // `00 /r`: add `al` to `esp + 1 * ecx + disp` using sib and disp
                 let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
@@ -521,18 +517,14 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 write_instruction(&mut code, [0x00, modrm, sib, b0, b1, b2, b3]);
             }
             Instruction::SubMul(disp, n) => {
-                // `8A /r`: move from `esp + 1 * ecx` to `al` using sib
-                let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                write_instruction(&mut code, [0x8A, modrm, sib]);
-
-                // `C6 /0 ib`: move immediate value `dl`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 0) };
+                // `C6 /0 ib`: move immediate value `al`
+                let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
                 write_instruction(&mut code, [0xC6, modrm, n]);
 
-                // `F6 /4`: multiply `al` with `dl` into `ax`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 4) };
-                write_instruction(&mut code, [0xF6, modrm]);
+                // `F6 /4`: multiply `al` with `esp + 1 * ecx` into `ax`
+                let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 4) };
+                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
+                write_instruction(&mut code, [0xF6, modrm, sib]);
 
                 // `28 /r`: subtract `al` from `esp + 1 * ecx + disp` using sib and disp
                 let modrm = const { normal_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
