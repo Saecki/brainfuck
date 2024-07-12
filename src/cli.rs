@@ -11,11 +11,13 @@ pub const ANSII_COLOR_YELLOW: &str = "\x1b[93m";
 
 pub struct Config {
     pub verbose: u8,
+    pub print_unoptimized_ir: bool,
     pub optimize: bool,
     pub o_zeros: bool,
     pub o_arithmetic: bool,
     pub o_jumps: bool,
     pub o_dead_code: bool,
+    pub o_init: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,27 +62,32 @@ pub fn parse_args() -> ControlFlow<ExitCode, (Config, Command, PathBuf)> {
     let mut path = None;
     let mut config = Config {
         verbose: 0,
+        print_unoptimized_ir: false,
         optimize: true,
         o_zeros: true,
         o_arithmetic: true,
         o_jumps: true,
         o_dead_code: true,
+        o_init: true,
     };
     for a in args {
         if let Some(n) = a.strip_prefix("--") {
             match n {
                 "verbose" => config.verbose += 1,
+                "print-unoptimized-ir" => config.print_unoptimized_ir = true,
                 "debug" => config.optimize = false,
                 "no-optimize-zeroes" => config.o_zeros = false,
                 "no-optimize-arithmetic" => config.o_arithmetic = false,
                 "no-optimize-jumps" => config.o_jumps = false,
                 "no-optimize-dead-code" => config.o_dead_code = false,
+                "no-optimize-init" => config.o_init = false,
                 _ => input_error!("unexpected argument `{a}`"),
             }
         } else if let Some(n) = a.strip_prefix('-') {
             for c in n.chars() {
                 match c {
                     'v' => config.verbose += 1,
+                    'u' => config.print_unoptimized_ir = true,
                     'd' => config.optimize = false,
                     _ => input_error!("unexpected flag `{c}`"),
                 }
@@ -113,11 +120,13 @@ brainfuck <mode> [<option>] <path>
 
 {ANSII_UNDERLINED}options{ANSII_CLEAR}
     -v,--verbose                change verbosity level via number of occurences [0..=3]
+    -u,--print-unoptimized-ir   print the ir before optimizations are applied
     -d,--debug                  disable all optimizations
        --no-optimize-zeros      disable zeroing optimization
        --no-optimize-arithmetic disable arithmetic optimizations
        --no-optimize-jumps      disable redundant jump elmination
        --no-optimize-dead-code  disable dead code elmination
+       --no-optimize-init       disable state initialization optimization
     "
     );
 }

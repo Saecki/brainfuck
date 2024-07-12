@@ -104,8 +104,10 @@ impl std::fmt::Display for Instruction {
             Instruction::Dec(o, n) => write!(f, "<{o}> - ({n})"),
             Instruction::Output => write!(f, "out"),
             Instruction::Input => write!(f, "in"),
-            Instruction::JumpZ(_) => write!(f, "["),
-            Instruction::JumpNz(_) => write!(f, "]"),
+            Instruction::JumpZ(Jump::Redundant) => write!(f, "[ !"),
+            Instruction::JumpZ(Jump::Location(_)) => write!(f, "["),
+            Instruction::JumpNz(Jump::Redundant) => write!(f, "] !"),
+            Instruction::JumpNz(Jump::Location(_)) => write!(f, "]"),
 
             Instruction::Zero(0) => write!(f, "zero"),
             Instruction::Zero(o) => write!(f, "<{o}> zero"),
@@ -180,9 +182,17 @@ fn main() -> ExitCode {
         if command == Command::Format {
             return ExitCode::SUCCESS;
         }
+        if config.verbose >= 1 {
+            println!("============================================================");
+        }
     }
 
     if config.optimize {
+        if config.print_unoptimized_ir {
+            cli::print_instructions(&instructions);
+            println!("============================================================");
+        }
+
         let prev_len = instructions.len();
         // zero register
         if config.o_zeros {
@@ -206,11 +216,10 @@ fn main() -> ExitCode {
             }
         }
 
-        if config.o_dead_code {
-            dead_code_elimination(&config, &mut instructions);
+        if config.o_dead_code || config.o_init || config.o_jumps {
+            optimize_static_code(&config, &mut instructions);
         }
 
-        // arithmetic instructions
         if config.o_arithmetic || config.o_jumps {
             let mut i = 0;
             while i < instructions.len() {
@@ -219,12 +228,46 @@ fn main() -> ExitCode {
             }
         }
 
-        if config.o_dead_code {
-            dead_code_elimination(&config, &mut instructions);
+        if config.o_dead_code || config.o_init || config.o_jumps {
+            optimize_static_code(&config, &mut instructions);
+        }
+
+        // remove optimized jumps
+        if config.o_jumps {
+            let mut par_stack = Vec::new();
+            let mut i = 0;
+            while i < instructions.len() {
+                let inst = instructions[i];
+                match inst {
+                    Instruction::JumpZ(jump) => par_stack.push((i, jump.is_redundant())),
+                    Instruction::JumpNz(end_jump) => {
+                        let Some((start_idx, start_redundant)) = par_stack.pop() else {
+                            unreachable!("mismatched brackets")
+                        };
+
+                        if start_redundant && end_jump.is_redundant() {
+                            if config.verbose >= 2 {
+                                println!("remove redundant jump pair at {start_idx} and {i}");
+                            }
+                            instructions.remove(i);
+                            instructions.remove(start_idx);
+
+                            i -= 2;
+                        }
+                    }
+                    _ => (),
+                }
+                i += 1;
+            }
+            if !par_stack.is_empty() {
+                unreachable!("mismatched brackets")
+            }
         }
 
         if config.verbose >= 1 {
-            println!("============================================================");
+            if config.verbose >= 2 {
+                println!("============================================================");
+            }
             println!(
                 "instructions before {} after: {} ({:.3}%)",
                 prev_len,
@@ -475,7 +518,7 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
                 };
                 *jump = Jump::Redundant;
                 if config.verbose >= 2 {
-                    println!("redundant conditional jump at {}", end);
+                    println!("redundant jump if not zero at {}", end);
                 }
             }
             return;
@@ -595,64 +638,119 @@ fn find_set_instruction_at_offset<'a>(
     None
 }
 
-fn dead_code_elimination(config: &Config, instructions: &mut Vec<Instruction>) {
-    // execute instructions that are known to be constant time
+fn optimize_static_code(config: &Config, instructions: &mut Vec<Instruction>) {
     let mut registers = [0u8; NUM_REGISTERS];
     let mut rp: i16 = 0;
     let mut i = 0;
     while i < instructions.len() {
-        let Some(inst) = instructions.get(i) else {
-            unreachable!()
-        };
-        match *inst {
-            Instruction::Shl(n) => rp -= n as i16,
-            Instruction::Shr(n) => rp += n as i16,
-            Instruction::Inc(o, n) => {
-                let r = &mut registers[(rp + o) as usize];
-                *r = r.wrapping_add(n);
-            }
-            Instruction::Dec(o, n) => {
-                let r = &mut registers[(rp + o) as usize];
-                *r = r.wrapping_sub(n);
-            }
-            Instruction::Output => return,
-            Instruction::Input => return,
-            Instruction::JumpZ(_) => {
-                let val = registers[rp as usize];
-                if val != 0 {
-                    return;
-                }
-                remove_dead_code(config, instructions, i);
-                continue;
-            }
-            Instruction::JumpNz(_) => return,
+        match static_code_execution_pass(config, instructions, i, &mut registers, &mut rp) {
+            ControlFlow::Continue(true) => i += 1,
+            ControlFlow::Continue(false) => (),
+            ControlFlow::Break(()) => {
+                if i > 0 && config.o_init {
+                    let all_set = instructions[0..i - 1]
+                        .iter()
+                        .all(|inst| matches!(inst, Instruction::Set(..)));
+                    let last_shr = matches!(instructions[i - 1], Instruction::Shr(_));
+                    if all_set && last_shr {
+                        return;
+                    }
 
-            Instruction::Zero(o) => registers[(rp + o) as usize] = 0,
-            Instruction::Set(o, n) => registers[(rp + o) as usize] = n,
-            Instruction::Add(o) => {
-                let val = registers[rp as usize];
-                let r = &mut registers[(rp + o) as usize];
-                *r = r.wrapping_add(val);
-            }
-            Instruction::Sub(o) => {
-                let val = registers[rp as usize];
-                let r = &mut registers[(rp + o) as usize];
-                *r = r.wrapping_sub(val);
-            }
-            Instruction::AddMul(o, n) => {
-                let val = registers[rp as usize];
-                let r = &mut registers[(rp + o) as usize];
-                *r = r.wrapping_add(n.wrapping_mul(val));
-            }
-            Instruction::SubMul(o, n) => {
-                let val = registers[rp as usize];
-                let r = &mut registers[(rp + o) as usize];
-                *r = r.wrapping_sub(n.wrapping_mul(val));
+                    let replacements = registers
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, n)| {
+                            if *n == 0 {
+                                return None;
+                            }
+                            Some(Instruction::Set(i as i16, *n))
+                        })
+                        .chain(Some(Instruction::Shr(rp as u16)))
+                        .collect::<Vec<_>>();
+                    if config.verbose >= 2 {
+                        let range = 0..i;
+                        println!("replaced {range:?} with static initialization {replacements:?}");
+                    }
+                    instructions.splice(0..i, replacements);
+                }
+                return;
             }
         }
-
-        i += 1;
     }
+
+    // TODO: if all instructions could be executed at compile time the program doesn't produce any
+    // output and could thus be empty
+}
+
+fn static_code_execution_pass(
+    config: &Config,
+    instructions: &mut Vec<Instruction>,
+    i: usize,
+    registers: &mut [u8; NUM_REGISTERS],
+    rp: &mut i16,
+) -> ControlFlow<(), bool> {
+    let Some(inst) = instructions.get_mut(i) else {
+        unreachable!()
+    };
+
+    match inst {
+        Instruction::Shl(n) => *rp -= *n as i16,
+        Instruction::Shr(n) => *rp += *n as i16,
+        Instruction::Inc(o, n) => {
+            let r = &mut registers[(*rp + *o) as usize];
+            *r = r.wrapping_add(*n);
+        }
+        Instruction::Dec(o, n) => {
+            let r = &mut registers[(*rp + *o) as usize];
+            *r = r.wrapping_sub(*n);
+        }
+        Instruction::Output => return ControlFlow::Break(()),
+        Instruction::Input => return ControlFlow::Break(()),
+        Instruction::JumpZ(jump) => {
+            let val = registers[*rp as usize];
+            if val != 0 {
+                if config.o_jumps {
+                    if config.verbose >= 2 {
+                        println!("redundant jump if zero at {}", i);
+                    }
+                    *jump = Jump::Redundant;
+                }
+                return ControlFlow::Break(());
+            }
+            if !config.o_dead_code {
+                return ControlFlow::Break(());
+            }
+
+            remove_dead_code(config, instructions, i);
+            return ControlFlow::Continue(false);
+        }
+        Instruction::JumpNz(_) => return ControlFlow::Break(()),
+
+        Instruction::Zero(o) => registers[(*rp + *o) as usize] = 0,
+        Instruction::Set(o, n) => registers[(*rp + *o) as usize] = *n,
+        Instruction::Add(o) => {
+            let val = registers[*rp as usize];
+            let r = &mut registers[(*rp + *o) as usize];
+            *r = r.wrapping_add(val);
+        }
+        Instruction::Sub(o) => {
+            let val = registers[*rp as usize];
+            let r = &mut registers[(*rp + *o) as usize];
+            *r = r.wrapping_sub(val);
+        }
+        Instruction::AddMul(o, n) => {
+            let val = registers[*rp as usize];
+            let r = &mut registers[(*rp + *o) as usize];
+            *r = r.wrapping_add(n.wrapping_mul(val));
+        }
+        Instruction::SubMul(o, n) => {
+            let val = registers[*rp as usize];
+            let r = &mut registers[(*rp + *o) as usize];
+            *r = r.wrapping_sub(n.wrapping_mul(val));
+        }
+    }
+
+    ControlFlow::Continue(true)
 }
 
 fn remove_dead_code(config: &Config, instructions: &mut Vec<Instruction>, start: usize) {
