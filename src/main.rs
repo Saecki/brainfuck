@@ -54,8 +54,8 @@ impl Token {
 pub enum Instruction {
     Shl(u16),
     Shr(u16),
-    Inc(u8),
-    Dec(u8),
+    Inc(i16, u8),
+    Dec(i16, u8),
     Output,
     Input,
     /// Jump to the position if the current register value is zero.
@@ -70,6 +70,7 @@ pub enum Instruction {
     /// ]
     /// ```
     Zero(i16),
+    Set(i16, u8),
     /// Add current register value to register at offset.
     Add(i16),
     /// Subtract current register value from register at offset.
@@ -97,14 +98,19 @@ impl std::fmt::Display for Instruction {
         match self {
             Instruction::Shl(n) => write!(f, "< ({n})"),
             Instruction::Shr(n) => write!(f, "> ({n})"),
-            Instruction::Inc(n) => write!(f, "+ ({n})"),
-            Instruction::Dec(n) => write!(f, "- ({n})"),
+            Instruction::Inc(0, n) => write!(f, "+ ({n})"),
+            Instruction::Inc(o, n) => write!(f, "<{o}> + ({n})"),
+            Instruction::Dec(0, n) => write!(f, "- ({n})"),
+            Instruction::Dec(o, n) => write!(f, "<{o}> - ({n})"),
             Instruction::Output => write!(f, "out"),
             Instruction::Input => write!(f, "in"),
             Instruction::JumpZ(_) => write!(f, "["),
             Instruction::JumpNz(_) => write!(f, "]"),
 
+            Instruction::Zero(0) => write!(f, "zero"),
             Instruction::Zero(o) => write!(f, "<{o}> zero"),
+            Instruction::Set(0, n) => write!(f, "set {n}"),
+            Instruction::Set(o, n) => write!(f, "<{o}> set {n}"),
             Instruction::Add(o) => write!(f, "<{o}> add"),
             Instruction::Sub(o) => write!(f, "<{o}> sub"),
             Instruction::AddMul(o, n) => write!(f, "<{o}> addmul({n})"),
@@ -151,8 +157,8 @@ fn main() -> ExitCode {
         .map(|chunk| match chunk[0] {
             Token::Shl => Instruction::Shl(chunk.len() as u16),
             Token::Shr => Instruction::Shr(chunk.len() as u16),
-            Token::Inc => Instruction::Inc(chunk.len() as u8),
-            Token::Dec => Instruction::Dec(chunk.len() as u8),
+            Token::Inc => Instruction::Inc(0, chunk.len() as u8),
+            Token::Dec => Instruction::Dec(0, chunk.len() as u8),
             Token::Output => Instruction::Output,
             Token::Input => Instruction::Input,
             Token::LSquare => Instruction::JumpZ(Jump::Location(NonZeroU32::MAX)),
@@ -187,7 +193,7 @@ fn main() -> ExitCode {
                 let [a, b, c] = &instructions[i..i + 3] else {
                     unreachable!()
                 };
-                if let (JumpZ(_), Dec(1), JumpNz(_)) = (a, b, c) {
+                if let (JumpZ(_), Dec(0, 1), JumpNz(_)) = (a, b, c) {
                     let range = i..i + 3;
                     if config.verbose >= 2 {
                         println!("replaced {range:?} with zero");
@@ -199,6 +205,11 @@ fn main() -> ExitCode {
                 i += 1;
             }
         }
+
+        if config.o_dead_code {
+            dead_code_elimination(&config, &mut instructions);
+        }
+
         // arithmetic instructions
         if config.o_arithmetic || config.o_jumps {
             let mut i = 0;
@@ -281,59 +292,66 @@ fn main() -> ExitCode {
 
 fn run(instructions: &[Instruction]) {
     let mut ip = 0;
-    let mut rp: usize = 0;
+    let mut rp: i16 = 0;
     let mut registers = [0u8; NUM_REGISTERS];
     loop {
-        let Some(b) = instructions.get(ip) else {
+        let Some(inst) = instructions.get(ip) else {
             break;
         };
 
-        match *b {
-            Instruction::Shl(n) => rp -= n as usize,
-            Instruction::Shr(n) => rp += n as usize,
-            Instruction::Inc(n) => registers[rp] = registers[rp].wrapping_add(n),
-            Instruction::Dec(n) => registers[rp] = registers[rp].wrapping_sub(n),
+        match *inst {
+            Instruction::Shl(n) => rp -= n as i16,
+            Instruction::Shr(n) => rp += n as i16,
+            Instruction::Inc(o, n) => {
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_add(n);
+            }
+            Instruction::Dec(o, n) => {
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_sub(n);
+            }
             Instruction::Output => {
-                _ = std::io::stdout().write(&registers[rp..rp + 1]);
+                _ = std::io::stdout().write(&registers[rp as usize..][..1]);
             }
             Instruction::Input => {
-                _ = std::io::stdin().read(&mut registers[rp..rp + 1]);
+                _ = std::io::stdin().read(&mut registers[rp as usize..][..1]);
             }
             Instruction::JumpZ(Jump::Location(idx)) => {
-                if registers[rp] == 0 {
+                if registers[rp as usize] == 0 {
                     ip = idx.get() as usize;
                     continue;
                 }
             }
             Instruction::JumpZ(Jump::Redundant) => (),
             Instruction::JumpNz(Jump::Location(idx)) => {
-                if registers[rp] > 0 {
+                if registers[rp as usize] > 0 {
                     ip = idx.get() as usize;
                     continue;
                 }
             }
             Instruction::JumpNz(Jump::Redundant) => (),
 
-            Instruction::Zero(o) => registers[(rp as isize + o as isize) as usize] = 0,
+            Instruction::Zero(o) => registers[(rp + o) as usize] = 0,
+            Instruction::Set(o, n) => registers[(rp + o) as usize] = n,
             Instruction::Add(o) => {
-                let val = registers[rp];
-                let r = &mut registers[(rp as isize + o as isize) as usize];
+                let val = registers[rp as usize];
+                let r = &mut registers[(rp + o) as usize];
                 *r = r.wrapping_add(val);
             }
             Instruction::Sub(o) => {
-                let val = registers[rp];
-                let r = &mut registers[(rp as isize + o as isize) as usize];
+                let val = registers[rp as usize];
+                let r = &mut registers[(rp + o) as usize];
                 *r = r.wrapping_sub(val);
             }
             Instruction::AddMul(o, n) => {
-                let val = n.wrapping_mul(registers[rp]);
-                let r = &mut registers[(rp as isize + o as isize) as usize];
-                *r = r.wrapping_add(val);
+                let val = registers[rp as usize];
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_add(n.wrapping_mul(val));
             }
             Instruction::SubMul(o, n) => {
-                let val = n.wrapping_mul(registers[rp]);
-                let r = &mut registers[(rp as isize + o as isize) as usize];
-                *r = r.wrapping_sub(val);
+                let val = registers[rp as usize];
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_sub(n.wrapping_mul(val));
             }
         }
 
@@ -377,6 +395,11 @@ impl IterationDiff {
         use IterationDiff::*;
         *self = Zeroed;
     }
+
+    fn set(&mut self, n: u8) {
+        use IterationDiff::*;
+        *self = ZeroedDiff(n as i16);
+    }
 }
 
 fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i: usize) {
@@ -402,31 +425,33 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
     let mut num_arith = 0;
     let mut iteration_diff = IterationDiff::Diff(0);
     for inst in inner {
-        match inst {
-            Shl(n) => offset -= *n as i16,
-            Shr(n) => offset += *n as i16,
-            Inc(n) => {
-                if offset == 0 {
-                    iteration_diff.inc(*n);
+        match *inst {
+            Shl(n) => offset -= n as i16,
+            Shr(n) => offset += n as i16,
+            Inc(o, n) => {
+                if offset + o == 0 {
+                    iteration_diff.inc(n);
                 } else {
                     num_arith += 1;
                 }
             }
-            Dec(n) => {
-                if offset == 0 {
-                    iteration_diff.dec(*n);
+            Dec(o, n) => {
+                if offset + o == 0 {
+                    iteration_diff.dec(n);
                 } else {
                     num_arith += 1;
                 }
             }
-            // FIXME: If this zeros the same register an Inc() or Dec() inside this loop,
-            // check if the other instruction is run before or after.
-            // If before, remove it.
-            // If after, don't replace it with an (Add | Sub | AddMul | SubMul), just move it
-            // outside the loop in the conditional with the zeroing instruction.
             Zero(o) => {
                 if offset + o == 0 {
                     iteration_diff.zero();
+                } else {
+                    num_arith += 1;
+                }
+            }
+            Set(o, n) => {
+                if offset + o == 0 {
+                    iteration_diff.set(n);
                 } else {
                     num_arith += 1;
                 }
@@ -473,34 +498,63 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
     let mut offset = 0;
     let mut replacements = Vec::with_capacity(num_arith + 1);
     for inst in inner.iter() {
-        match inst {
-            Shl(n) => offset -= *n as i16,
-            Shr(n) => offset += *n as i16,
-            Inc(n) => {
+        match *inst {
+            Shl(n) => offset -= n as i16,
+            Shr(n) => offset += n as i16,
+            Inc(o, n) => {
+                let offset = offset + o;
                 if offset != 0 {
-                    let replacement = match n {
-                        1 => Add(offset),
-                        _ => AddMul(offset, *n),
-                    };
-                    replacements.push(replacement);
+                    if let Some(set) = find_set_instruction_at_offset(&mut replacements, offset) {
+                        *set.inst = Set(offset, set.prev_val.wrapping_add(n));
+                    } else {
+                        let replacement = match n {
+                            1 => Add(offset),
+                            _ => AddMul(offset, n),
+                        };
+                        replacements.push(replacement);
+                    }
                 }
             }
-            Dec(n) => {
+            Dec(o, n) => {
+                let offset = offset + o;
                 if offset != 0 {
-                    let replacement = match n {
-                        1 => Sub(offset),
-                        _ => SubMul(offset, *n),
-                    };
-                    replacements.push(replacement);
+                    if let Some(set) = find_set_instruction_at_offset(&mut replacements, offset) {
+                        *set.inst = Set(offset, set.prev_val.wrapping_add(n));
+                    } else {
+                        let replacement = match n {
+                            1 => Sub(offset),
+                            _ => SubMul(offset, n),
+                        };
+                        replacements.push(replacement);
+                    }
                 }
             }
             Zero(o) => {
-                if offset + o != 0 {
-                    replacements.extend([
-                        JumpZ(Jump::Location(NonZeroU32::MAX)),
-                        Zero(offset + o),
-                        JumpNz(Jump::Redundant),
-                    ]);
+                let offset = offset + o;
+                if offset != 0 {
+                    if let Some(set) = find_set_instruction_at_offset(&mut replacements, offset) {
+                        *set.inst = Zero(offset)
+                    } else {
+                        replacements.extend([
+                            JumpZ(Jump::Location(NonZeroU32::MAX)),
+                            Zero(offset),
+                            JumpNz(Jump::Redundant),
+                        ]);
+                    }
+                }
+            }
+            Set(o, n) => {
+                let offset = offset + o;
+                if offset != 0 {
+                    if let Some(set) = find_set_instruction_at_offset(&mut replacements, offset) {
+                        *set.inst = Set(offset, n);
+                    } else {
+                        replacements.extend([
+                            JumpZ(Jump::Location(NonZeroU32::MAX)),
+                            Zero(offset),
+                            JumpNz(Jump::Redundant),
+                        ]);
+                    }
                 }
             }
             Output | Input | JumpZ(_) | JumpNz(_) | Add(_) | Sub(_) | AddMul(..) | SubMul(..) => {
@@ -517,25 +571,49 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
     _ = instructions.splice(range, replacements);
 }
 
+struct SetInstruction<'a> {
+    inst: &'a mut Instruction,
+    prev_val: u8,
+}
+
+fn find_set_instruction_at_offset<'a>(
+    instructions: &'a mut [Instruction],
+    offset: i16,
+) -> Option<SetInstruction<'a>> {
+    for inst in instructions.iter_mut().rev() {
+        match inst {
+            &mut Instruction::Zero(o) if offset == o => {
+                return Some(SetInstruction { inst, prev_val: 0 })
+            }
+            &mut Instruction::Set(o, n) if offset == o => {
+                return Some(SetInstruction { inst, prev_val: n })
+            }
+            _ => (),
+        }
+    }
+
+    None
+}
+
 fn dead_code_elimination(config: &Config, instructions: &mut Vec<Instruction>) {
     // execute instructions that are known to be constant time
     let mut registers = [0u8; NUM_REGISTERS];
-    let mut rp = 0;
+    let mut rp: i16 = 0;
     let mut i = 0;
     while i < instructions.len() {
         let Some(inst) = instructions.get(i) else {
             unreachable!()
         };
-        match inst {
-            Instruction::Shl(n) => rp -= *n,
-            Instruction::Shr(n) => rp += *n,
-            Instruction::Inc(n) => {
-                let reg = &mut registers[rp as usize];
-                *reg = reg.wrapping_add(*n);
+        match *inst {
+            Instruction::Shl(n) => rp -= n as i16,
+            Instruction::Shr(n) => rp += n as i16,
+            Instruction::Inc(o, n) => {
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_add(n);
             }
-            Instruction::Dec(n) => {
-                let reg = &mut registers[rp as usize];
-                *reg = reg.wrapping_sub(*n);
+            Instruction::Dec(o, n) => {
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_sub(n);
             }
             Instruction::Output => return,
             Instruction::Input => return,
@@ -548,33 +626,28 @@ fn dead_code_elimination(config: &Config, instructions: &mut Vec<Instruction>) {
                 continue;
             }
             Instruction::JumpNz(_) => return,
-            Instruction::Zero(o) => {
-                let idx = rp as i16 + o;
-                registers[idx as usize] = 0;
-            }
+
+            Instruction::Zero(o) => registers[(rp + o) as usize] = 0,
+            Instruction::Set(o, n) => registers[(rp + o) as usize] = n,
             Instruction::Add(o) => {
                 let val = registers[rp as usize];
-                let idx = rp as i16 + o;
-                let reg = &mut registers[idx as usize];
-                *reg = reg.wrapping_add(val);
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_add(val);
             }
             Instruction::Sub(o) => {
                 let val = registers[rp as usize];
-                let idx = rp as i16 + o;
-                let reg = &mut registers[idx as usize];
-                *reg = reg.wrapping_sub(val);
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_sub(val);
             }
             Instruction::AddMul(o, n) => {
                 let val = registers[rp as usize];
-                let idx = rp as i16 + o;
-                let reg = &mut registers[idx as usize];
-                *reg = reg.wrapping_add(val.wrapping_mul(*n));
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_add(n.wrapping_mul(val));
             }
             Instruction::SubMul(o, n) => {
                 let val = registers[rp as usize];
-                let idx = rp as i16 + o;
-                let reg = &mut registers[idx as usize];
-                *reg = reg.wrapping_sub(val.wrapping_mul(*n));
+                let r = &mut registers[(rp + o) as usize];
+                *r = r.wrapping_sub(n.wrapping_mul(val));
             }
         }
 

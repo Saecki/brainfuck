@@ -124,30 +124,33 @@ brainfuck <mode> [<option>] <path>
 
 pub fn print_brainfuck_code(instructions: &[Instruction]) {
     let mut indent = 0;
-    for i in instructions.iter() {
-        if let Instruction::JumpNz(_) = i {
+    for inst in instructions.iter() {
+        if let Instruction::JumpNz(_) = inst {
             indent -= 1
         }
         for _ in 0..indent {
             print!("    ");
         }
-        match i {
-            Instruction::Shl(n) => println!("{:<<width$}", "", width = *n as usize),
-            Instruction::Shr(n) => println!("{:><width$}", "", width = *n as usize),
-            Instruction::Inc(n) => println!("{:+<width$}", "", width = *n as usize),
-            Instruction::Dec(n) => println!("{:-<width$}", "", width = *n as usize),
+        match *inst {
+            Instruction::Shl(n) => println!("{:<<width$}", "", width = n as usize),
+            Instruction::Shr(n) => println!("{:><width$}", "", width = n as usize),
+            Instruction::Inc(0, n) => println!("{:+<width$}", "", width = n as usize),
+            Instruction::Inc(_, _) => unreachable!(),
+            Instruction::Dec(0, n) => println!("{:-<width$}", "", width = n as usize),
+            Instruction::Dec(_, _) => unreachable!(),
             Instruction::Output => println!("."),
             Instruction::Input => println!(","),
             Instruction::JumpZ(_) => println!("["),
             Instruction::JumpNz(_) => println!("]"),
 
             Instruction::Zero(_) => unreachable!(),
+            Instruction::Set(_, _) => unreachable!(),
             Instruction::Add(_) => unreachable!(),
             Instruction::Sub(_) => unreachable!(),
             Instruction::AddMul(_, _) => unreachable!(),
             Instruction::SubMul(_, _) => unreachable!(),
         }
-        if let Instruction::JumpZ(_) = i {
+        if let Instruction::JumpZ(_) = inst {
             indent += 1
         }
     }

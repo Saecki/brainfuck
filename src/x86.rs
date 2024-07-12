@@ -452,6 +452,30 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                     }
                 }
             }
+            Instruction::Set(disp, n) => {
+                match disp {
+                    0 => {
+                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx` using sib
+                        let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 0) };
+                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
+                        write_instruction(&mut code, [0xC6, modrm, sib, n]);
+                    }
+                    -128..=127 => {
+                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx + disp` using sib and disp
+                        let modrm = const { ext_modrm(ModRm::Indirect1ByteDisp(RmID::Sib), 0) };
+                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
+                        let [disp] = i8::to_le_bytes(disp as i8);
+                        write_instruction(&mut code, [0xC6, modrm, sib, disp, n]);
+                    }
+                    _ => {
+                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx + disp` using sib and disp
+                        let modrm = const { ext_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), 0) };
+                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
+                        let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
+                        write_instruction(&mut code, [0xC6, modrm, sib, b0, b1, b2, b3, n]);
+                    }
+                }
+            }
             Instruction::Add(disp) => {
                 // `8A /r`: move from `esp + 1 * ecx` to `al` using sib
                 let modrm = const { normal_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
