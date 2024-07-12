@@ -3,8 +3,8 @@ use crate::{Instruction, NUM_REGISTERS};
 #[derive(Clone, Copy)]
 pub enum ModRm {
     Indirect(RmI),
-    Indirect1ByteDisp(RmID),
-    Indirect4ByteDisp(RmID),
+    IndirectDisp8(RmID),
+    IndirectDisp32(RmID),
     Register(Reg),
 }
 
@@ -12,8 +12,8 @@ impl ModRm {
     pub const fn mode(&self) -> u8 {
         match self {
             ModRm::Indirect(..) => 0b00,
-            ModRm::Indirect1ByteDisp(..) => 0b01,
-            ModRm::Indirect4ByteDisp(..) => 0b10,
+            ModRm::IndirectDisp8(..) => 0b01,
+            ModRm::IndirectDisp32(..) => 0b10,
             ModRm::Register(..) => 0b11,
         }
     }
@@ -21,8 +21,8 @@ impl ModRm {
     pub const fn rm(&self) -> u8 {
         match *self {
             ModRm::Indirect(rm) => rm as u8,
-            ModRm::Indirect1ByteDisp(rm) => rm as u8,
-            ModRm::Indirect4ByteDisp(rm) => rm as u8,
+            ModRm::IndirectDisp8(rm) => rm as u8,
+            ModRm::IndirectDisp32(rm) => rm as u8,
             ModRm::Register(rm) => rm as u8,
         }
     }
@@ -36,7 +36,7 @@ pub enum RmI {
     RegRdx = 0b010,
     RegRbx = 0b011,
     Sib = 0b100,
-    Disp4byte = 0b101,
+    Disp32 = 0b101,
     RegRsi = 0b110,
     RegRdi = 0b111,
 }
@@ -67,15 +67,33 @@ pub enum Reg {
 }
 
 /// Generate a `MOD-REG_R/M` byte with a `reg` field
-pub const fn reg_modrm(modrm: ModRm, reg: Reg) -> u8 {
+pub const fn modrm_reg(modrm: ModRm, reg: Reg) -> u8 {
     (modrm.mode() << 6) | ((reg as u8) << 3) | modrm.rm()
 }
 
 /// Generate a `MOD-REG_R/M` byte with an op-code extension
-pub const fn ext_modrm(modrm: ModRm, ext: u8) -> u8 {
+pub const fn modrm_ext(modrm: ModRm, ext: u8) -> u8 {
     (modrm.mode() << 6) | (ext << 3) | modrm.rm()
 }
 
+#[derive(Clone, Copy)]
+pub struct Sib {
+    scale: Scale,
+    idx: Reg,
+    base: Reg,
+}
+
+impl Sib {
+    pub const fn new(scale: Scale, idx: Reg, base: Reg) -> Self {
+        Self { scale, idx, base }
+    }
+
+    pub const fn sib(&self) -> u8 {
+        ((self.scale as u8) << 6) | ((self.idx as u8) << 3) | (self.base as u8)
+    }
+}
+
+#[derive(Clone, Copy)]
 pub enum Scale {
     /// 1 byte scale
     B1 = 0b00,
@@ -85,10 +103,6 @@ pub enum Scale {
     B4 = 0b10,
     /// 8 byte scale
     B8 = 0b11,
-}
-
-pub const fn gen_sib(scale: Scale, index: Reg, base: Reg) -> u8 {
-    ((scale as u8) << 6) | ((index as u8) << 3) | (base as u8)
 }
 
 #[repr(C)]
@@ -139,7 +153,7 @@ struct ElfProgramHeader {
 #[macro_export]
 macro_rules! const_assert {
     ($x:expr $(,)?) => {
-        #[allow(unknown_lints, eq_op)]
+        #[allow(unknown_lints, clippy::eq_op)]
         const _: [(); 0 - !{
             const ASSERT: bool = $x;
             ASSERT
@@ -205,197 +219,120 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
         .chain(program_header.iter().copied())
         .collect();
 
-    // prepare brainfuck registers
-    const REXW: u8 = 0x48;
-    {
-        // `REX.W 81 /5 id`: allocate stack space for 32768 elements
-        let modrm = const { ext_modrm(ModRm::Register(Reg::Rsp), 5) };
-        let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_REGISTERS as u32);
-        write_instruction(&mut code, [REXW, 0x81, modrm, b0, b1, b2, b3]);
+    write_instructions(&mut code, instructions);
 
-        // `REX.W C7 /0 id`: write ITERATIONS to `rcx`
-        const NUM_ITERATIONS: u32 = NUM_REGISTERS as u32 / 8;
-        let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
-        let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_ITERATIONS);
-        write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+    // update loadable segment size
+    {
+        let size = code.len() as u64 - PROGRAM_OFFSET as u64;
+        let program_header = &mut code[B64_ELF_HEADER_LEN..][..B64_PROGRAM_HEADER_LEN];
+        const P_FILESZ: usize = std::mem::offset_of!(ElfProgramHeader, p_filesz);
+        program_header[P_FILESZ..P_FILESZ + 8].copy_from_slice(&u64::to_le_bytes(size));
+        const P_MEMSZ: usize = std::mem::offset_of!(ElfProgramHeader, p_memsz);
+        program_header[P_MEMSZ..P_MEMSZ + 8].copy_from_slice(&u64::to_le_bytes(size));
+    }
+
+    code
+}
+
+fn write_instructions(code: &mut Vec<u8>, instructions: &[Instruction]) {
+    // prepare brainfuck registers array
+    {
+        // allocate stack space for brainfuck registers array
+        write(code, sub_imm32_from_r64(Reg::Rsp, NUM_REGISTERS as i32));
+
+        const NUM_ITERATIONS: i32 = NUM_REGISTERS as i32 / 8;
+        write(code, mov_imm32_to_r64(Reg::Rcx, NUM_ITERATIONS));
 
         let loop_start = code.len();
-        // `83 /5 ib`: subtract 1 from `ecx`
-        let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 5) };
-        write_instruction(&mut code, [0x83, modrm, 0x1]);
+        write(code, sub_imm8_from_r32(Reg::Rcx, 0x01));
 
-        // `REX.W C7 /0 id`: write 0u32 to stack at `rsp + 8 * rcx` using a scaled index byte (SIB)
-        let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 0) };
-        let sib = const { gen_sib(Scale::B8, Reg::Rcx, Reg::Rsp) };
-        let [b0, b1, b2, b3] = u32::to_le_bytes(0);
-        write_instruction(&mut code, [REXW, 0xC7, modrm, sib, b0, b1, b2, b3]);
+        // write 0_i64 to stack at `rsp + 8 * rcx` using a scaled index byte (SIB)
+        const SIB: Sib = Sib::new(Scale::B8, Reg::Rcx, Reg::Rsp);
+        write(code, mov_imm32_to_sib64(SIB, 0));
 
-        // `83 /7 ib`: cmp `ecx` to `0`
-        let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 7) };
-        write_instruction(&mut code, [0x83, modrm, 0x00]);
+        write(code, cmp_r32_with_imm8(Reg::Rcx, 0x00));
 
         // the instruction pointer will have already moved to the next instruction, so it will be
         // after the jump instruction
-        let loop_end = code.len() + 2;
-        // `75 cb`: jump if not 0
-        let [rel_jump] = i8::to_le_bytes((loop_start as isize - loop_end as isize) as i8);
-        write_instruction(&mut code, [0x75, rel_jump]);
+        let loop_end = code.len() + const { jnz_rel8(0).len() };
+        let rel_jump = (loop_start as isize - loop_end as isize) as i8;
+        write(code, jnz_rel8(rel_jump))
     }
 
     // generate code
+
+    // scaled index byte used to index into the brainfuck register array
+    const SIB: Sib = Sib::new(Scale::B1, Reg::Rcx, Reg::Rsp);
 
     // stores if the jump is redundant, and the location before opening jump (`[`), the jump offset
     // is stored inside the [6..10] bytes after that
     let mut jump_stack = Vec::new();
     for inst in instructions.iter() {
         match *inst {
-            Instruction::Shl(n) => {
-                // `81 /5 id`: sub immediate value from `ecx`
-                let [b0, b1] = u16::to_le_bytes(n);
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 5) };
-                write_instruction(&mut code, [0x81, modrm, b0, b1, 0, 0]);
-            }
-            Instruction::Shr(n) => {
-                // `81 /0 id`: add immediate value to `ecx`
-                let [b0, b1] = u16::to_le_bytes(n);
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
-                write_instruction(&mut code, [0x81, modrm, b0, b1, 0, 0]);
-            }
-            Instruction::Inc(disp, n) => {
-                match disp {
-                    0 => {
-                        // `80 /0 ib`: add immediate value to `esp + 1 * ecx`
-                        let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        write_instruction(&mut code, [0x80, modrm, sib, n]);
-                    }
-                    -128..=127 => {
-                        // `80 /0 ib`: add immediate value to `esp + 1 * ecx + disp`
-                        let modrm = const { ext_modrm(ModRm::Indirect1ByteDisp(RmID::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [disp] = i8::to_le_bytes(disp as i8);
-                        write_instruction(&mut code, [0x80, modrm, sib, disp, n]);
-                    }
-                    _ => {
-                        // `80 /0 ib`: add immediate value to `esp + 1 * ecx + disp`
-                        let modrm = const { ext_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
-                        write_instruction(&mut code, [0x80, modrm, sib, b0, b1, b2, b3, n]);
-                    }
-                }
-            }
-            Instruction::Dec(disp, n) => {
-                match disp {
-                    0 => {
-                        // `80 /5 ib`: add immediate value to `esp + 1 * ecx`
-                        let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 5) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        write_instruction(&mut code, [0x80, modrm, sib, n]);
-                    }
-                    -128..=127 => {
-                        // `80 /5 ib`: add immediate value to `esp + 1 * ecx + disp`
-                        let modrm = const { ext_modrm(ModRm::Indirect1ByteDisp(RmID::Sib), 5) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [disp] = i8::to_le_bytes(disp as i8);
-                        write_instruction(&mut code, [0x80, modrm, sib, disp, n]);
-                    }
-                    _ => {
-                        // `80 /5 ib`: add immediate value to `esp + 1 * ecx + disp`
-                        let modrm = const { ext_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), 5) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
-                        write_instruction(&mut code, [0x80, modrm, sib, b0, b1, b2, b3, n]);
-                    }
-                }
-            }
+            #[rustfmt::skip]
+            Instruction::Shl(n) => match n {
+                0..=127 => write(code, sub_imm8_from_r32(Reg::Rcx, n as i8)),
+                _ =>       write(code, sub_imm32_from_r32(Reg::Rcx, n as i32)),
+            },
+            #[rustfmt::skip]
+            Instruction::Shr(n) => match n {
+                0..=127 => write(code, add_imm8_to_r32(Reg::Rcx, n as i8)),
+                _ =>       write(code, add_imm32_to_r32(Reg::Rcx, n as i32)),
+            },
+            #[rustfmt::skip]
+            Instruction::Inc(disp, n) => match disp {
+                0 =>          write(code, add_imm8_to_sib8(SIB, n)),
+                -128..=127 => write(code, add_imm8_to_sib8_disp8(SIB, disp as i8, n)),
+                _ =>          write(code, add_imm8_to_sib8_disp32(SIB, disp as i32, n)),
+            },
+            #[rustfmt::skip]
+            Instruction::Dec(disp, n) => match disp {
+                0 =>          write(code, sub_imm8_from_sib8(SIB, n)),
+                -128..=127 => write(code, sub_imm8_from_sib8_disp8(SIB, disp as i8, n)),
+                _ =>          write(code, sub_imm8_from_sib8_disp32(SIB, disp as i32, n)),
+            },
             Instruction::Output => {
-                // `REX.W C7 /0 id`: move immediate value to `rax`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
-                const SYSCALL_WRITE: u32 = 1;
-                let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_WRITE);
-                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+                const SYSCALL_WRITE: i32 = 1;
+                write(code, mov_imm32_to_r64(Reg::Rax, SYSCALL_WRITE));
 
-                // `REX.W C7 /0 id`: move immediate value to `rdi`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdi), 0) };
-                const STDOUT_FD: u32 = 1;
-                let [b0, b1, b2, b3] = u32::to_le_bytes(STDOUT_FD);
-                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+                const STDOUT_FD: i32 = 1;
+                write(code, mov_imm32_to_r64(Reg::Rdi, STDOUT_FD));
 
                 // write address of string to `rsi`
-                // `REX.W 89 /r`: move from `rsp` to `rsi`
-                let modrm = const { reg_modrm(ModRm::Register(Reg::Rsi), Reg::Rsp) };
-                write_instruction(&mut code, [REXW, 0x89, modrm]);
-                // `REX.W 01 /r`: add `rcx` to `rsi`
-                let modrm = const { reg_modrm(ModRm::Register(Reg::Rsi), Reg::Rcx) };
-                write_instruction(&mut code, [REXW, 0x01, modrm]);
+                write(code, mov_r64_to_r64(Reg::Rsp, Reg::Rsi));
+                write(code, add_r64_to_r64(Reg::Rcx, Reg::Rsi));
 
-                // `REX.W C7 /0 id`: move immediate value to `rdx`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 0) };
-                const STRING_LEN: u32 = 1;
-                let [b0, b1, b2, b3] = u32::to_le_bytes(STRING_LEN);
-                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+                const STRING_LEN: i32 = 1;
+                write(code, mov_imm32_to_r64(Reg::Rdx, STRING_LEN));
 
-                // `FF /6`: push rcx onto the stack
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 6) };
-                write_instruction(&mut code, [0xFF, modrm]);
-
-                // `0F 05`: SYSCALL - fast system call
-                write_instruction(&mut code, [0x0F, 0x05]);
-
-                // `8F /0`: pop rcx off the stack
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
-                write_instruction(&mut code, [0x8F, modrm]);
+                write(code, push_r64(Reg::Rcx));
+                write(code, SYSCALL);
+                write(code, pop_r64(Reg::Rcx));
             }
             Instruction::Input => {
-                // `REX.W C7 /0 id`: move immediate value to `rax`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
-                const SYSCALL_READ: u32 = 0;
-                let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_READ);
-                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+                const _SYSCALL_READ: i32 = 0;
+                write(code, xor_r64_r64(Reg::Rax, Reg::Rax));
 
-                // `REX.W C7 /0 id`: move immediate value to `rdi`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdi), 0) };
-                const STDIN_FD: u32 = 0;
-                let [b0, b1, b2, b3] = u32::to_le_bytes(STDIN_FD);
-                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+                const _STDIN_FD: i32 = 0;
+                write(code, xor_r64_r64(Reg::Rdi, Reg::Rdi));
 
                 // write address of string to `rsi`
-                // `REX.W 89 /r`: move from `rsp` to `rsi`
-                let modrm = const { reg_modrm(ModRm::Register(Reg::Rsi), Reg::Rsp) };
-                write_instruction(&mut code, [REXW, 0x89, modrm]);
-                // `REX.W 01 /r`: add `rcx` to `rsi`
-                let modrm = const { reg_modrm(ModRm::Register(Reg::Rsi), Reg::Rcx) };
-                write_instruction(&mut code, [REXW, 0x01, modrm]);
+                write(code, mov_r64_to_r64(Reg::Rsp, Reg::Rsi));
+                write(code, add_r64_to_r64(Reg::Rcx, Reg::Rsi));
 
-                // `REX.W C7 /0 id`: move immediate value to `rdx`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rdx), 0) };
-                const STRING_LEN: u32 = 1;
-                let [b0, b1, b2, b3] = u32::to_le_bytes(STRING_LEN);
-                write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+                const STRING_LEN: i32 = 1;
+                write(code, mov_imm32_to_r64(Reg::Rdx, STRING_LEN));
 
-                // `FF /6`: push rcx onto the stack
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 6) };
-                write_instruction(&mut code, [0xFF, modrm]);
-
-                // `0F 05`: SYSCALL - fast system call
-                write_instruction(&mut code, [0x0F, 0x05]);
-
-                // `8F /0`: pop rcx off the stack
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rcx), 0) };
-                write_instruction(&mut code, [0x8F, modrm]);
+                write(code, push_r64(Reg::Rcx));
+                write(code, SYSCALL);
+                write(code, pop_r64(Reg::Rcx));
             }
             Instruction::JumpZ(jump) => {
                 let redundant = jump.is_redundant();
                 if !redundant {
-                    // `80 /7 ib`: cmp with `0`
-                    let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 7) };
-                    let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                    write_instruction(&mut code, [0x80, modrm, sib, 0x00]);
-
-                    // `0F 84 cd`: jump if zero
-                    let [b0, b1, b2, b3] = u32::to_le_bytes(0);
-                    write_instruction(&mut code, [0x0F, 0x84, b0, b1, b2, b3]);
+                    write(code, cmp_sib8_with_imm8(SIB, 0));
+                    // actual jump offset is updated when writing the matching JumpNz (`]`) instruction
+                    write(code, jz_rel32(0));
                 }
 
                 let pos = code.len();
@@ -411,14 +348,8 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                     let pos = code.len();
                     let offset = start_pos as i32 - pos as i32 - 10;
 
-                    // `80 /7 ib`: cmp with `0`
-                    let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 7) };
-                    let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                    write_instruction(&mut code, [0x80, modrm, sib, 0x00]);
-
-                    // `0F 85 cd`: jump if not zero
-                    let [b0, b1, b2, b3] = i32::to_le_bytes(offset);
-                    write_instruction(&mut code, [0x0F, 0x85, b0, b1, b2, b3]);
+                    write(code, cmp_sib8_with_imm8(SIB, 0));
+                    write(code, jnz_rel32(offset));
                 }
 
                 if !start_redundant {
@@ -428,178 +359,320 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
                 }
             }
 
-            Instruction::Zero(disp) => {
-                match disp {
-                    0 => {
-                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx`
-                        let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        write_instruction(&mut code, [0xC6, modrm, sib, 0x00]);
-                    }
-                    -128..=127 => {
-                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx + disp`
-                        let modrm = const { ext_modrm(ModRm::Indirect1ByteDisp(RmID::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [disp] = i8::to_le_bytes(disp as i8);
-                        write_instruction(&mut code, [0xC6, modrm, sib, disp, 0x00]);
-                    }
-                    _ => {
-                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx + disp`
-                        let modrm = const { ext_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
-                        write_instruction(&mut code, [0xC6, modrm, sib, b0, b1, b2, b3, 0x00]);
-                    }
-                }
-            }
-            Instruction::Set(disp, n) => {
-                match disp {
-                    0 => {
-                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx`
-                        let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        write_instruction(&mut code, [0xC6, modrm, sib, n]);
-                    }
-                    -128..=127 => {
-                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx + disp`
-                        let modrm = const { ext_modrm(ModRm::Indirect1ByteDisp(RmID::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [disp] = i8::to_le_bytes(disp as i8);
-                        write_instruction(&mut code, [0xC6, modrm, sib, disp, n]);
-                    }
-                    _ => {
-                        // `C6 /0 ib`: move immediate value to `esp + 1 * ecx + disp`
-                        let modrm = const { ext_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), 0) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
-                        write_instruction(&mut code, [0xC6, modrm, sib, b0, b1, b2, b3, n]);
-                    }
-                }
-            }
+            #[rustfmt::skip]
+            Instruction::Zero(disp) => match disp {
+                0 =>          write(code, mov_imm8_to_sib8(SIB, 0x00)),
+                -128..=127 => write(code, mov_imm8_to_sib8_disp8(SIB, disp as i8, 0x00)),
+                _ =>          write(code, mov_imm8_to_sib8_disp32(SIB, disp as i32, 0x00)),
+            },
+            #[rustfmt::skip]
+            Instruction::Set(disp, n) => match disp {
+                0 =>          write(code, mov_imm8_to_sib8(SIB, n)),
+                -128..=127 => write(code, mov_imm8_to_sib8_disp8(SIB, disp as i8, n)),
+                _ =>          write(code, mov_imm8_to_sib8_disp32(SIB, disp as i32, n)),
+            },
             Instruction::Add(disp) => {
-                // `8A /r`: move from `esp + 1 * ecx` to `al`
-                let modrm = const { reg_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                write_instruction(&mut code, [0x8A, modrm, sib]);
-
-                // `00 /r`: add `al` to `esp + 1 * ecx + disp`
-                let modrm = const { reg_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
-                write_instruction(&mut code, [0x00, modrm, sib, b0, b1, b2, b3]);
+                write(code, mov_sib8_to_r8(SIB, Reg::Rax));
+                #[rustfmt::skip]
+                match disp {
+                    0 =>          write(code, add_r8_to_sib8(Reg::Rax, SIB)),
+                    -128..=127 => write(code, add_r8_to_sib8_disp8(Reg::Rax, SIB, disp as i8)),
+                    _ =>          write(code, add_r8_to_sib8_disp32(Reg::Rax, SIB, disp as i32)),
+                };
             }
             Instruction::Sub(disp) => {
-                // `8A /r`: move from `esp + 1 * ecx` to `al`
-                let modrm = const { reg_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                write_instruction(&mut code, [0x8A, modrm, sib]);
-
-                // `28 /r`: subtract `al` from `esp + 1 * ecx + disp`
-                let modrm = const { reg_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
-                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
-                write_instruction(&mut code, [0x28, modrm, sib, b0, b1, b2, b3]);
+                write(code, mov_sib8_to_r8(SIB, Reg::Rax));
+                #[rustfmt::skip]
+                match disp {
+                    0 =>          write(code, sub_r8_from_sib8(Reg::Rax, SIB)),
+                    -128..=127 => write(code, sub_r8_from_sib8_disp8(Reg::Rax, SIB, disp as i8)),
+                    _ =>          write(code, sub_r8_from_sib8_disp32(Reg::Rax, SIB, disp as i32)),
+                };
             }
             Instruction::AddMul(disp, n) => {
-                // `C6 /0 ib`: move immediate value `al`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
-                write_instruction(&mut code, [0xC6, modrm, n]);
-
-                // `F6 /4`: multiply `al` with `esp + 1 * ecx` into `ax`
-                let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 4) };
-                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                write_instruction(&mut code, [0xF6, modrm, sib]);
-
+                write(code, mov_imm8_to_r8(Reg::Rax, n));
+                write(code, mul_al_with_sib8(SIB));
+                #[rustfmt::skip]
                 match disp {
-                    0 => {
-                        // `00 /r`: add `al` to `esp + 1 * ecx`
-                        let modrm = const { reg_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        write_instruction(&mut code, [0x00, modrm, sib]);
-                    }
-                    -128..=127 => {
-                        // `00 /r`: add `al` to `esp + 1 * ecx + disp`
-                        let modrm = const { reg_modrm(ModRm::Indirect1ByteDisp(RmID::Sib), Reg::Rax) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [disp] = i8::to_le_bytes(disp as i8);
-                        write_instruction(&mut code, [0x00, modrm, sib, disp]);
-                    }
-                    _ => {
-                        // `00 /r`: add `al` to `esp + 1 * ecx + disp`
-                        let modrm = const { reg_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
-                        write_instruction(&mut code, [0x00, modrm, sib, b0, b1, b2, b3]);
-                    }
-                }
+                    0 =>          write(code, add_r8_to_sib8(Reg::Rax, SIB)),
+                    -128..=127 => write(code, add_r8_to_sib8_disp8(Reg::Rax, SIB, disp as i8)),
+                    _ =>          write(code, add_r8_to_sib8_disp32(Reg::Rax, SIB, disp as i32)),
+                };
             }
             Instruction::SubMul(disp, n) => {
-                // `C6 /0 ib`: move immediate value `al`
-                let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
-                write_instruction(&mut code, [0xC6, modrm, n]);
-
-                // `F6 /4`: multiply `al` with `esp + 1 * ecx` into `ax`
-                let modrm = const { ext_modrm(ModRm::Indirect(RmI::Sib), 4) };
-                let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                write_instruction(&mut code, [0xF6, modrm, sib]);
-
+                write(code, mov_imm8_to_r8(Reg::Rax, n));
+                write(code, mul_al_with_sib8(SIB));
+                #[rustfmt::skip]
                 match disp {
-                    0 => {
-                        // `28 /r`: subtract `al` from `esp + 1 * ecx`
-                        let modrm = const { reg_modrm(ModRm::Indirect(RmI::Sib), Reg::Rax) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        write_instruction(&mut code, [0x28, modrm, sib]);
-                    }
-                    -128..=127 => {
-                        // `28 /r`: subtract `al` from `esp + 1 * ecx + disp`
-                        let modrm = const { reg_modrm(ModRm::Indirect1ByteDisp(RmID::Sib), Reg::Rax) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [disp] = i8::to_le_bytes(disp as i8);
-                        write_instruction(&mut code, [0x28, modrm, sib, disp]);
-                    }
-                    _ => {
-                        // `28 /r`: subtract `al` from `esp + 1 * ecx + disp`
-                        let modrm = const { reg_modrm(ModRm::Indirect4ByteDisp(RmID::Sib), Reg::Rax) };
-                        let sib = const { gen_sib(Scale::B1, Reg::Rcx, Reg::Rsp) };
-                        let [b0, b1, b2, b3] = i32::to_le_bytes(disp as i32);
-                        write_instruction(&mut code, [0x28, modrm, sib, b0, b1, b2, b3]);
-                    }
-                }
+                    0 =>          write(code, sub_r8_from_sib8(Reg::Rax, SIB)),
+                    -128..=127 => write(code, sub_r8_from_sib8_disp8(Reg::Rax, SIB, disp as i8)),
+                    _ =>          write(code, sub_r8_from_sib8_disp32(Reg::Rax, SIB, disp as i32)),
+                };
             }
         }
     }
 
-    // `81 /0 id`: pop stack
-    let modrm = const { ext_modrm(ModRm::Register(Reg::Rsp), 0) };
-    let [b0, b1, b2, b3] = u32::to_le_bytes(NUM_REGISTERS as u32);
-    write_instruction(&mut code, [REXW, 0x81, modrm, b0, b1, b2, b3]);
+    // pop brainfuck registers array off the stack
+    write(code, add_imm32_to_r64(Reg::Rsp, NUM_REGISTERS as i32));
 
-    // `C7 /0 id`: move immediate value to `eax`
-    let modrm = const { ext_modrm(ModRm::Register(Reg::Rax), 0) };
-    const SYSCALL_EXIT: u32 = 60;
-    let [b0, b1, b2, b3] = u32::to_le_bytes(SYSCALL_EXIT);
-    write_instruction(&mut code, [REXW, 0xC7, modrm, b0, b1, b2, b3]);
+    const SYSCALL_EXIT: i32 = 60;
+    write(code, mov_imm32_to_r64(Reg::Rax, SYSCALL_EXIT));
 
-    // `31 /r`: clear the edi register
-    let modrm = reg_modrm(ModRm::Register(Reg::Rdi), Reg::Rdi);
-    write_instruction(&mut code, [REXW, 0x31, modrm]);
+    // clear the edi register
+    write(code, xor_r64_r64(Reg::Rdi, Reg::Rdi));
 
-    // `0F 05`: SYSCALL - fast system call
-    write_instruction(&mut code, [0x0F, 0x05]);
-
-    // update loadable segment size
-    {
-        let size = code.len() as u64 - PROGRAM_OFFSET as u64;
-        let program_header = &mut code[B64_ELF_HEADER_LEN..][..B64_PROGRAM_HEADER_LEN];
-        const P_FILESZ: usize = std::mem::offset_of!(ElfProgramHeader, p_filesz);
-        program_header[P_FILESZ..P_FILESZ + 8].copy_from_slice(&u64::to_le_bytes(size));
-        const P_MEMSZ: usize = std::mem::offset_of!(ElfProgramHeader, p_memsz);
-        program_header[P_MEMSZ..P_MEMSZ + 8].copy_from_slice(&u64::to_le_bytes(size));
-    }
-
-    code
+    write(code, SYSCALL);
 }
 
-fn write_instruction<const SIZE: usize>(code: &mut Vec<u8>, instruction: [u8; SIZE]) {
+fn write<const SIZE: usize>(code: &mut Vec<u8>, instruction: [u8; SIZE]) {
     code.extend_from_slice(&instruction);
 }
+
+/// prefix for some 64-bit instructions
+const REXW: u8 = 0x48;
+
+// ========================================
+//                   ADD
+// ========================================
+
+// `00 /r` : `ADD r/m8 r8` : add r8 to r/m8
+pub const fn add_r8_to_r8(src: Reg, dest: Reg) -> [u8; 2] {
+    let modrm = modrm_reg(ModRm::Register(dest), src);
+    [0x00, modrm]
+}
+pub const fn add_r8_to_sib8(src: Reg, dest: Sib) -> [u8; 3] {
+    let modrm = modrm_reg(ModRm::Indirect(RmI::Sib), src);
+    [0x00, modrm, dest.sib()]
+}
+pub const fn add_r8_to_sib8_disp8(src: Reg, dest: Sib, disp: i8) -> [u8; 4] {
+    let modrm = modrm_reg(ModRm::IndirectDisp8(RmID::Sib), src);
+    let [disp] = i8::to_le_bytes(disp);
+    [0x00, modrm, dest.sib(), disp]
+}
+pub const fn add_r8_to_sib8_disp32(src: Reg, dest: Sib, disp: i32) -> [u8; 7] {
+    let modrm = modrm_reg(ModRm::IndirectDisp32(RmID::Sib), src);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(disp);
+    [0x00, modrm, dest.sib(), b0, b1, b2, b3]
+}
+
+// `80 /0 ib`: `ADD r/m8 imm8` : add imm8 to r/m8
+pub const fn add_imm8_to_r8(dest: Reg, ib: u8) -> [u8; 3] {
+    let modrm = modrm_ext(ModRm::Register(dest), 0);
+    [0x80, modrm, ib]
+}
+pub const fn add_imm8_to_sib8(dest: Sib, ib: u8) -> [u8; 4] {
+    const MODRM: u8 = modrm_ext(ModRm::Indirect(RmI::Sib), 0);
+    [0x80, MODRM, dest.sib(), ib]
+}
+pub const fn add_imm8_to_sib8_disp8(dest: Sib, disp: i8, ib: u8) -> [u8; 5] {
+    const MODRM: u8 = modrm_ext(ModRm::IndirectDisp8(RmID::Sib), 0);
+    let [disp] = i8::to_le_bytes(disp);
+    [0x80, MODRM, dest.sib(), disp, ib]
+}
+pub const fn add_imm8_to_sib8_disp32(dest: Sib, disp: i32, ib: u8) -> [u8; 8] {
+    const MODRM: u8 = modrm_ext(ModRm::IndirectDisp32(RmID::Sib), 0);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(disp);
+    [0x80, MODRM, dest.sib(), b0, b1, b2, b3, ib]
+}
+
+// `83 /0 ib` : `ADD r/m32 imm8` : add imm8 sign extended to 32-bits to r/m32
+pub const fn add_imm8_to_r32(dest: Reg, ib: i8) -> [u8; 3] {
+    let modrm = modrm_ext(ModRm::Register(dest), 0);
+    let [ib] = i8::to_le_bytes(ib);
+    [0x83, modrm, ib]
+}
+
+// `81 /0 id` : `ADD r/m32 imm32` : add imm32 to r/m32
+pub const fn add_imm32_to_r32(dest: Reg, id: i32) -> [u8; 6] {
+    let modrm = modrm_ext(ModRm::Register(dest), 0);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(id);
+    [0x81, modrm, b0, b1, b2, b3]
+}
+
+// `REX.W 01 /r` : `ADD r/m64 r64` : add r64 to r/m64
+pub const fn add_r64_to_r64(src: Reg, dest: Reg) -> [u8; 3] {
+    let modrm = modrm_reg(ModRm::Register(dest), src);
+    [REXW, 0x01, modrm]
+}
+
+// `REX.W 81 /0 id` : `ADD r/m64 imm32` : add imm32 sign extended to 64-bits to r/m64
+pub const fn add_imm32_to_r64(dest: Reg, id: i32) -> [u8; 7] {
+    let modrm = modrm_ext(ModRm::Register(dest), 0);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(id);
+    [REXW, 0x81, modrm, b0, b1, b2, b3]
+}
+
+// ========================================
+//                   SUB
+// ========================================
+
+// `28 /r` : `SUB r/m8 r8` : subtract r8 from r/m8
+pub const fn sub_r8_from_r8(src: Reg, sib: Sib) -> [u8; 3] {
+    let modrm = modrm_reg(ModRm::Indirect(RmI::Sib), src);
+    [0x28, modrm, sib.sib()]
+}
+pub const fn sub_r8_from_sib8(src: Reg, dest: Sib) -> [u8; 3] {
+    let modrm = modrm_reg(ModRm::Indirect(RmI::Sib), src);
+    [0x28, modrm, dest.sib()]
+}
+pub const fn sub_r8_from_sib8_disp8(src: Reg, dest: Sib, disp: i8) -> [u8; 4] {
+    let modrm = modrm_reg(ModRm::IndirectDisp8(RmID::Sib), src);
+    let [disp] = i8::to_le_bytes(disp);
+    [0x28, modrm, dest.sib(), disp]
+}
+pub const fn sub_r8_from_sib8_disp32(src: Reg, dest: Sib, disp: i32) -> [u8; 7] {
+    let modrm = modrm_reg(ModRm::IndirectDisp32(RmID::Sib), src);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(disp);
+    [0x28, modrm, dest.sib(), b0, b1, b2, b3]
+}
+
+// `80 /5 ib`: `SUB r/m8 imm8` : subtract imm8 from r/m8
+pub const fn sub_imm8_from_r8(dest: Reg, ib: u8) -> [u8; 3] {
+    let modrm = modrm_ext(ModRm::Register(dest), 5);
+    [0x80, modrm, ib]
+}
+pub const fn sub_imm8_from_sib8(dest: Sib, ib: u8) -> [u8; 4] {
+    const MODRM: u8 = modrm_ext(ModRm::Indirect(RmI::Sib), 5);
+    [0x80, MODRM, dest.sib(), ib]
+}
+pub const fn sub_imm8_from_sib8_disp8(dest: Sib, disp: i8, ib: u8) -> [u8; 5] {
+    const MODRM: u8 = modrm_ext(ModRm::IndirectDisp8(RmID::Sib), 5);
+    let [disp] = i8::to_le_bytes(disp);
+    [0x80, MODRM, dest.sib(), disp, ib]
+}
+pub const fn sub_imm8_from_sib8_disp32(dest: Sib, disp: i32, ib: u8) -> [u8; 8] {
+    const MODRM: u8 = modrm_ext(ModRm::IndirectDisp32(RmID::Sib), 5);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(disp);
+    [0x80, MODRM, dest.sib(), b0, b1, b2, b3, ib]
+}
+
+// `83 /5 ib` : `SUB r/m32 imm8` : subtract imm8 sign extended to 32-bit from r/m32
+pub const fn sub_imm8_from_r32(dest: Reg, ib: i8) -> [u8; 3] {
+    let modrm = modrm_ext(ModRm::Register(dest), 5);
+    let [ib] = i8::to_le_bytes(ib);
+    [0x83, modrm, ib]
+}
+
+// `81 /5 id` : `SUB r/m32 imm32` : subtract imm32 from r/m32
+pub const fn sub_imm32_from_r32(dest: Reg, id: i32) -> [u8; 6] {
+    let modrm = modrm_ext(ModRm::Register(dest), 5);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(id);
+    [0x81, modrm, b0, b1, b2, b3]
+}
+
+// `REX.W 81 /5 id` : `SUB r/m64 imm32` : subtract imm32 sign extended to 64-bits from r/m64
+pub const fn sub_imm32_from_r64(dest: Reg, id: i32) -> [u8; 7] {
+    let modrm = modrm_ext(ModRm::Register(dest), 5);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(id);
+    [REXW, 0x81, modrm, b0, b1, b2, b3]
+}
+
+// ========================================
+//                   MOV
+// ========================================
+
+// `C6 /0 ib` : `MOV r/m8 imm8` : move imm8 to r/m8
+pub const fn mov_imm8_to_r8(dest: Reg, ib: u8) -> [u8; 3] {
+    let modrm = modrm_ext(ModRm::Register(dest), 0);
+    [0xC6, modrm, ib]
+}
+pub const fn mov_imm8_to_sib8(dest: Sib, ib: u8) -> [u8; 4] {
+    let modrm = modrm_ext(ModRm::Indirect(RmI::Sib), 0);
+    [0xC6, modrm, dest.sib(), ib]
+}
+pub const fn mov_imm8_to_sib8_disp8(dest: Sib, disp: i8, ib: u8) -> [u8; 5] {
+    let modrm = modrm_ext(ModRm::IndirectDisp8(RmID::Sib), 0);
+    let [disp] = i8::to_le_bytes(disp);
+    [0xC6, modrm, dest.sib(), disp, ib]
+}
+pub const fn mov_imm8_to_sib8_disp32(sib: Sib, disp: i32, ib: u8) -> [u8; 8] {
+    let modrm = modrm_ext(ModRm::IndirectDisp32(RmID::Sib), 0);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(disp);
+    [0xC6, modrm, sib.sib(), b0, b1, b2, b3, ib]
+}
+
+// `8A /r`: `MOV r8 r/m8` : move r/m8 to r8
+pub const fn mov_sib8_to_r8(src: Sib, dest: Reg) -> [u8; 3] {
+    let modrm = modrm_reg(ModRm::Indirect(RmI::Sib), dest);
+    [0x8A, modrm, src.sib()]
+}
+
+// `REX.W 89 /r` : `MOV r/m64 r64` : move r64 to r/m64
+pub const fn mov_r64_to_r64(src: Reg, dest: Reg) -> [u8; 3] {
+    let modrm = modrm_reg(ModRm::Register(dest), src);
+    [REXW, 0x89, modrm]
+}
+
+// `REX.W C7 /0 id` : `MOV r/m64 imm32` : move imm32 sign extended to 64-bits to r/m64
+pub const fn mov_imm32_to_r64(dest: Reg, id: i32) -> [u8; 7] {
+    let modrm = modrm_ext(ModRm::Register(dest), 0);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(id);
+    [REXW, 0xC7, modrm, b0, b1, b2, b3]
+}
+pub const fn mov_imm32_to_sib64(dest: Sib, id: i32) -> [u8; 8] {
+    let modrm = modrm_ext(ModRm::Indirect(RmI::Sib), 0);
+    let [b0, b1, b2, b3] = i32::to_le_bytes(id);
+    [REXW, 0xC7, modrm, dest.sib(), b0, b1, b2, b3]
+}
+
+// ========================================
+//                   MISC
+// ========================================
+
+// `F6 /4`: `MUL r/m8` : multiply al with r/m8 into ax
+pub const fn mul_al_with_sib8(src: Sib) -> [u8; 3] {
+    let modrm = modrm_ext(ModRm::Indirect(RmI::Sib), 4);
+    [0xF6, modrm, src.sib()]
+}
+
+// `31 /r`: `XOR r/m64 r64` : performs r/m64 xor r64 into r/m64
+pub const fn xor_r64_r64(src: Reg, dest: Reg) -> [u8; 3] {
+    let modrm = modrm_reg(ModRm::Register(dest), src);
+    [REXW, 0x31, modrm]
+}
+
+// `80 /7 ib` : `CMP r/m8 imm8` : compare r/m8 with imm8
+pub const fn cmp_sib8_with_imm8(src: Sib, ib: u8) -> [u8; 4] {
+    let modrm = const { modrm_ext(ModRm::Indirect(RmI::Sib), 7) };
+    [0x80, modrm, src.sib(), ib]
+}
+
+// `83 /7 ib` : `CMP r/m32 imm8` : compare r/m32 with imm8
+pub const fn cmp_r32_with_imm8(src: Reg, ib: i8) -> [u8; 3] {
+    let modrm = modrm_ext(ModRm::Register(src), 7);
+    let [ib] = i8::to_le_bytes(ib);
+    [0x83, modrm, ib]
+}
+
+// `0F 84 cd` : `JZ rel32` : jump rel32 if zero
+pub const fn jz_rel32(cd: i32) -> [u8; 6] {
+    let [b0, b1, b2, b3] = i32::to_le_bytes(cd);
+    [0x0F, 0x84, b0, b1, b2, b3]
+}
+
+// `75 cd` : `JNZ rel8` : jump rel8 if not zero
+pub const fn jnz_rel8(cd: i8) -> [u8; 2] {
+    let [cd] = i8::to_le_bytes(cd);
+    [0x75, cd]
+}
+
+// `0F 85 cd` : `JNZ rel32` : jump rel32 if not zero
+pub const fn jnz_rel32(cd: i32) -> [u8; 6] {
+    let [b0, b1, b2, b3] = i32::to_le_bytes(cd);
+    [0x0F, 0x85, b0, b1, b2, b3]
+}
+
+// `FF /6`: `PUSH r64` : push r64 onto the stack
+pub const fn push_r64(src: Reg) -> [u8; 2] {
+    let modrm = modrm_ext(ModRm::Register(src), 6);
+    [0xFF, modrm]
+}
+
+// `8F /0`: `POP r64` : pop r64 off the stack
+pub const fn pop_r64(dest: Reg) -> [u8; 2] {
+    let modrm = modrm_ext(ModRm::Register(dest), 0);
+    [0x8F, modrm]
+}
+
+/// `0F 05`: `SYSCALL` : fast system call
+pub const SYSCALL: [u8; 2] = [0x0F, 0x05];
