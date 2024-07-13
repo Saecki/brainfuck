@@ -15,9 +15,11 @@ modes
 
 options
     -v,--verbose                change verbosity level via number of occurences [0..=3]
+    -u,--print-unoptimized-ir   print the ir before optimizations are applied
     -d,--debug                  disable all optimizations
        --no-optimize-zeros      disable zeroing optimization
        --no-optimize-arithmetic disable arithmetic optimizations
        --no-optimize-jumps      disable redundant jump elmination
        --no-optimize-dead-code  disable dead code elmination
+       --no-optimize-init       disable state initialization optimization
 ```
