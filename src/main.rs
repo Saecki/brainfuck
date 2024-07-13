@@ -7,12 +7,26 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::cli::{Command, Config, ANSII_CLEAR, ANSII_COLOR_YELLOW};
+use crate::cli::{Command, Config, ANSII_CLEAR, ANSII_COLOR_RED, ANSII_COLOR_YELLOW};
 
 pub mod cli;
 pub mod x86;
 
 const NUM_REGISTERS: usize = 1 << 15;
+
+macro_rules! warn {
+    ($pat:expr) => {{
+        eprint!("{ANSII_COLOR_YELLOW}warning{ANSII_CLEAR}: ");
+        eprintln!($pat);
+    }};
+}
+
+macro_rules! error {
+    ($pat:expr) => {{
+        eprint!("{ANSII_COLOR_RED}error{ANSII_CLEAR}: ");
+        eprintln!($pat);
+    }};
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Token {
@@ -130,23 +144,48 @@ fn main() -> ExitCode {
     let input = std::fs::read_to_string(&path).unwrap();
     let bytes = input.as_bytes();
 
-    let tokens = bytes
-        .iter()
-        .filter_map(|b| {
-            let t = match *b {
-                b'<' => Token::Shl,
-                b'>' => Token::Shr,
-                b'+' => Token::Inc,
-                b'-' => Token::Dec,
-                b'.' => Token::Output,
-                b',' => Token::Input,
-                b'[' => Token::LSquare,
-                b']' => Token::RSquare,
-                _ => return None,
-            };
-            Some(t)
-        })
-        .collect::<Vec<_>>();
+    let mut line = 1;
+    let mut line_start = 0;
+    let mut par_stack = Vec::new();
+    let mut tokens = Vec::new();
+    let mut mismatched = false;
+    for (i, b) in bytes.iter().enumerate() {
+        let t = match *b {
+            b'<' => Token::Shl,
+            b'>' => Token::Shr,
+            b'+' => Token::Inc,
+            b'-' => Token::Dec,
+            b'.' => Token::Output,
+            b',' => Token::Input,
+            b'[' => {
+                let col = input[line_start..i].chars().count();
+                par_stack.push((line, col));
+                Token::LSquare
+            }
+            b']' => {
+                if par_stack.pop().is_none() {
+                    let col = input[line_start..i].chars().count();
+                    error!("missing opening bracket for [{line}:{col}]");
+                    mismatched = true;
+                }
+                Token::RSquare
+            }
+            b'\n' => {
+                line += 1;
+                line_start = i + 1;
+                continue;
+            }
+            _ => continue,
+        };
+        tokens.push(t);
+    }
+    for &(line, col) in par_stack.iter() {
+        error!("missing closing bracket for [{line}:{col}]");
+        mismatched = true;
+    }
+    if mismatched {
+        return ExitCode::FAILURE;
+    }
 
     // combine instructions
     let mut instructions = tokens
@@ -527,7 +566,7 @@ fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>, i:
             if !end_jump.is_redundant() {
                 let range = start - 1..end + 1;
                 let l = &instructions[range.clone()];
-                eprintln!("{ANSII_COLOR_YELLOW}warning{ANSII_CLEAR}: infinite loop detected at {range:?}:\n{l:?}");
+                warn!("infinite loop detected at {range:?}:\n{l:?}");
             }
             return;
         }
