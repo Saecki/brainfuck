@@ -619,16 +619,16 @@ struct SetInstruction<'a> {
     prev_val: u8,
 }
 
-fn find_set_instruction_at_offset<'a>(
-    instructions: &'a mut [Instruction],
+fn find_set_instruction_at_offset(
+    instructions: &mut [Instruction],
     offset: i16,
-) -> Option<SetInstruction<'a>> {
+) -> Option<SetInstruction<'_>> {
     for inst in instructions.iter_mut().rev() {
-        match inst {
-            &mut Instruction::Zero(o) if offset == o => {
+        match *inst {
+            Instruction::Zero(o) if offset == o => {
                 return Some(SetInstruction { inst, prev_val: 0 })
             }
-            &mut Instruction::Set(o, n) if offset == o => {
+            Instruction::Set(o, n) if offset == o => {
                 return Some(SetInstruction { inst, prev_val: n })
             }
             _ => (),
