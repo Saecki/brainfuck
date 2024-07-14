@@ -666,8 +666,11 @@ fn optimize_static_code(config: &Config, instructions: &mut Vec<Instruction>) {
                     let all_set = instructions[0..i - 1]
                         .iter()
                         .all(|inst| matches!(inst, Instruction::Set(..)));
-                    let last_shr = matches!(instructions[i - 1], Instruction::Shr(_));
-                    if all_set && last_shr {
+                    let last_set_or_shr = matches!(
+                        instructions[i - 1],
+                        Instruction::Set(..) | Instruction::Shr(_)
+                    );
+                    if all_set && last_set_or_shr {
                         return;
                     }
 
@@ -680,7 +683,7 @@ fn optimize_static_code(config: &Config, instructions: &mut Vec<Instruction>) {
                             }
                             Some(Instruction::Set(i as i16, *n))
                         })
-                        .chain(Some(Instruction::Shr(rp as u16)))
+                        .chain((rp != 0).then_some(Instruction::Shr(rp as u16)))
                         .collect::<Vec<_>>();
                     if config.verbose >= 2 {
                         let range = 0..i;
