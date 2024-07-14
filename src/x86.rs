@@ -248,6 +248,21 @@ pub fn compile(config: &Config, instructions: &[Instruction]) -> Vec<u8> {
         program_header[P_MEMSZ..P_MEMSZ + 8].copy_from_slice(&u64::to_le_bytes(size));
     }
 
+    if config.verbose >= 1 {
+        const K: usize = 1024;
+        const M: usize = K * K;
+        const G: usize = K * M;
+        print!("generated code size: ");
+        let size = code.len();
+        match size {
+            _ if size < K => println!("{}b", size),
+            _ if size < M => println!("{:.2}kb", size as f32 / K as f32),
+            _ if size < G => println!("{:.2}Mb", size as f32 / M as f32),
+            _ => println!("{size}Gb"),
+        }
+        println!("============================================================");
+    }
+
     code
 }
 
