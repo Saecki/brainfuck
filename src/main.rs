@@ -331,7 +331,7 @@ fn main() -> ExitCode {
         Command::Ir => unreachable!(),
         Command::Run => run(&instructions),
         Command::Compile => {
-            let code = x86::compile(&instructions);
+            let code = x86::compile(&config, &instructions);
             let path: &Path = path.as_ref();
             let bin_path = path.with_extension("elf");
             let mut file = OpenOptions::new()

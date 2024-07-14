@@ -1,3 +1,4 @@
+use crate::cli::Config;
 use crate::{Instruction, NUM_REGISTERS};
 
 #[repr(C)]
@@ -178,7 +179,7 @@ macro_rules! const_assert {
 }
 
 /// Generate a 64-bit x86 linux ELF binary
-pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
+pub fn compile(config: &Config, instructions: &[Instruction]) -> Vec<u8> {
     const B64_ELF_HEADER_LEN: usize = 0x40;
     const B64_PROGRAM_HEADER_LEN: usize = 0x38;
     const PROGRAM_OFFSET: usize = B64_ELF_HEADER_LEN + B64_PROGRAM_HEADER_LEN;
@@ -235,7 +236,7 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
         .chain(program_header.iter().copied())
         .collect();
 
-    write_instructions(&mut code, instructions);
+    write_instructions(config, &mut code, instructions);
 
     // update loadable segment size
     {
@@ -250,7 +251,7 @@ pub fn compile(instructions: &[Instruction]) -> Vec<u8> {
     code
 }
 
-fn write_instructions(code: &mut Vec<u8>, instructions: &[Instruction]) {
+fn write_instructions(config: &Config, code: &mut Vec<u8>, instructions: &[Instruction]) {
     // prepare brainfuck registers array
     {
         // allocate stack space for brainfuck registers array
@@ -357,19 +358,47 @@ fn write_instructions(code: &mut Vec<u8>, instructions: &[Instruction]) {
                     unreachable!()
                 };
 
+                const CMP_INST_LEN: usize = cmp_sib8_with_imm8(SIB, 0).len();
+                const REL8_INST_LEN: usize = CMP_INST_LEN + jnz_rel8(0).len();
+                const REL32_JUMP_INST_LEN: usize = jnz_rel32(0).len();
+                const REL32_INST_LEN: usize = CMP_INST_LEN + REL32_JUMP_INST_LEN;
+                let pos = code.len();
+                let offset_without_inst = pos - start_pos;
                 let redundant = jump.is_redundant();
-                if !redundant {
-                    let pos = code.len();
-                    let offset = start_pos as i32 - pos as i32 - 10;
 
-                    write(code, cmp_sib8_with_imm8(SIB, 0));
-                    write(code, jnz_rel32(offset));
+                let (rel8, offset) = if redundant {
+                    (offset_without_inst < 128, offset_without_inst)
+                } else if offset_without_inst + REL8_INST_LEN < 128 {
+                    (true, offset_without_inst + REL8_INST_LEN)
+                } else {
+                    (false, offset_without_inst + REL32_INST_LEN)
+                };
+
+                if config.verbose >= 3 {
+                    if rel8 {
+                        println!("using rel8 jump for offset: {offset}");
+                    } else {
+                        println!("using rel32 jump for offset: {offset}");
+                    }
                 }
 
                 if !start_redundant {
-                    let pos = code.len();
-                    let offset = pos as i32 - start_pos as i32;
-                    code[start_pos - 4..start_pos].copy_from_slice(&i32::to_le_bytes(offset));
+                    if rel8 {
+                        let jump_inst = jz_rel8(offset as i8);
+                        code.splice(start_pos - REL32_JUMP_INST_LEN..start_pos, jump_inst);
+                    } else {
+                        let offset = i32::to_le_bytes(offset as i32);
+                        code[start_pos - 4..start_pos].copy_from_slice(&offset);
+                    }
+                }
+
+                if !redundant {
+                    write(code, cmp_sib8_with_imm8(SIB, 0));
+                    if rel8 {
+                        write(code, jnz_rel8(-(offset as i8)));
+                    } else {
+                        write(code, jnz_rel32(-(offset as i32)));
+                    }
                 }
             }
 
@@ -688,6 +717,12 @@ pub const fn cmp_r32_with_imm8(src: Reg, ib: i8) -> [u8; 3] {
     let modrm = modrm_ext(ModRm::Register(src), 7);
     let [ib] = i8::to_le_bytes(ib);
     [0x83, modrm, ib]
+}
+
+/// `74 cb` : `JZ rel8` : jump rel8 if zero
+pub const fn jz_rel8(cb: i8) -> [u8; 2] {
+    let [cb] = i8::to_le_bytes(cb);
+    [0x74, cb]
 }
 
 /// `0F 84 cd` : `JZ rel32` : jump rel32 if zero
