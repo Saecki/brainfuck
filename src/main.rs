@@ -417,6 +417,11 @@ fn run(instructions: &[Instruction]) {
     }
 }
 
+enum IndexInc {
+    Zero = 0,
+    One = 1,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IterationDiff {
     /// The change each loop iteration will have on the iteration register.
@@ -659,8 +664,7 @@ fn optimize_static_code(config: &Config, instructions: &mut Vec<Instruction>) {
     let mut i = 0;
     while i < instructions.len() {
         match static_code_execution_pass(config, instructions, i, &mut registers, &mut rp) {
-            ControlFlow::Continue(true) => i += 1,
-            ControlFlow::Continue(false) => (),
+            ControlFlow::Continue(index_inc) => i += index_inc as usize,
             ControlFlow::Break(()) => {
                 if i > 0 && config.o_init {
                     let all_set = instructions[0..i - 1]
@@ -706,7 +710,7 @@ fn static_code_execution_pass(
     i: usize,
     registers: &mut [u8; NUM_REGISTERS],
     rp: &mut i16,
-) -> ControlFlow<(), bool> {
+) -> ControlFlow<(), IndexInc> {
     let Some(inst) = instructions.get_mut(i) else {
         unreachable!()
     };
@@ -740,7 +744,7 @@ fn static_code_execution_pass(
             }
 
             remove_dead_code(config, instructions, i);
-            return ControlFlow::Continue(false);
+            return ControlFlow::Continue(IndexInc::Zero);
         }
         Instruction::JumpNz(_) => return ControlFlow::Break(()),
 
@@ -768,7 +772,7 @@ fn static_code_execution_pass(
         }
     }
 
-    ControlFlow::Continue(true)
+    ControlFlow::Continue(IndexInc::One)
 }
 
 fn remove_dead_code(config: &Config, instructions: &mut Vec<Instruction>, start: usize) {
