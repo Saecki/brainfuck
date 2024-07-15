@@ -294,12 +294,12 @@ fn main() -> ExitCode {
     }
 
     // update jump indices
-    let mut par_stack = Vec::new();
+    let mut jump_stack = Vec::new();
     for (i, instruction) in instructions.iter_mut().enumerate() {
         match instruction {
-            Instruction::JumpZ(closing_idx_ref) => par_stack.push((i, closing_idx_ref)),
+            Instruction::JumpZ(closing_idx_ref) => jump_stack.push((i, closing_idx_ref)),
             Instruction::JumpNz(opening_idx_ref) => {
-                let Some((opening_idx, closing_idx_ref)) = par_stack.pop() else {
+                let Some((opening_idx, closing_idx_ref)) = jump_stack.pop() else {
                     unreachable!("mismatched brackets")
                 };
 
@@ -313,7 +313,7 @@ fn main() -> ExitCode {
             _ => (),
         }
     }
-    if !par_stack.is_empty() {
+    if !jump_stack.is_empty() {
         unreachable!("mismatched brackets")
     }
 
@@ -796,14 +796,14 @@ fn remove_dead_code(config: &Config, instructions: &mut Vec<Instruction>, start:
 }
 
 fn remove_redundant_jump_pairs(config: &Config, instructions: &mut Vec<Instruction>) {
-    let mut par_stack = Vec::new();
+    let mut jump_stack = Vec::new();
     let mut i = 0;
     while i < instructions.len() {
         let inst = instructions[i];
         match inst {
-            Instruction::JumpZ(jump) => par_stack.push((i, jump.is_redundant())),
+            Instruction::JumpZ(jump) => jump_stack.push((i, jump.is_redundant())),
             Instruction::JumpNz(end_jump) => {
-                let Some((start_idx, start_redundant)) = par_stack.pop() else {
+                let Some((start_idx, start_redundant)) = jump_stack.pop() else {
                     unreachable!("mismatched brackets")
                 };
 
@@ -821,7 +821,7 @@ fn remove_redundant_jump_pairs(config: &Config, instructions: &mut Vec<Instructi
         }
         i += 1;
     }
-    if !par_stack.is_empty() {
+    if !jump_stack.is_empty() {
         unreachable!("mismatched brackets")
     }
 }
