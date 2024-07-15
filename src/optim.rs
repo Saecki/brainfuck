@@ -497,7 +497,7 @@ fn combine_shifts(
         0 => {
             if config.verbose >= 2 {
                 let removed = &instructions[range.clone()];
-                println!("remove redundant {range:?} {removed:?}");
+                println!("remove redundant shifts {range:?} {removed:?}");
             }
             instructions.drain(range);
             return IndexInc::Zero;
@@ -506,7 +506,7 @@ fn combine_shifts(
     };
     if config.verbose >= 2 {
         let removed = &instructions[range.clone()];
-        println!("simplify {range:?} {removed:?} with {replacement:?}");
+        println!("simplify shifts {range:?} {removed:?} with {replacement:?}");
     }
     instructions.splice(range, Some(replacement));
 
