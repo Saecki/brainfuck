@@ -196,7 +196,7 @@ fn main() -> ExitCode {
     let mut instructions = tokens
         .chunk_by(|a, b| a.is_combinable() && a == b)
         .inspect(|c| {
-            if config.verbose >= 2 && c.len() > 1 {
+            if config.verbose >= 3 && c.len() > 1 {
                 println!("combine {}", c.len());
             }
         })
