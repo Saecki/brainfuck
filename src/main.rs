@@ -271,6 +271,10 @@ fn main() -> ExitCode {
             }
         }
 
+        if config.o_simplify {
+            simplify_code(&config, &mut instructions);
+        }
+
         if config.o_dead_code || config.o_init || config.o_jumps {
             optimize_static_code(&config, &mut instructions);
         }
@@ -828,4 +832,215 @@ fn remove_redundant_jump_pairs(config: &Config, instructions: &mut Vec<Instructi
     if !jump_stack.is_empty() {
         unreachable!("mismatched brackets")
     }
+}
+
+fn simplify_code(config: &Config, instructions: &mut Vec<Instruction>) {
+    use Instruction::*;
+
+    let mut i = 0;
+    while i < instructions.len() {
+        let inst = instructions[i];
+        let index_inc = match inst {
+            Shl(n) => combine_shifts(config, instructions, i, -(n as i16)),
+            Shr(n) => combine_shifts(config, instructions, i, n as i16),
+
+            Inc(o, n) => combine_sets(config, instructions, i, o, SetField::Diff(n as i16)),
+            Dec(o, n) => combine_sets(config, instructions, i, o, SetField::Diff(-(n as i16))),
+            Zero(o) => combine_sets(config, instructions, i, o, SetField::Zeroed(o)),
+            Set(o, n) => combine_sets(config, instructions, i, o, SetField::Zeroed(n as i16)),
+
+            Add(o) => combine_add_sub(config, instructions, i, o, 1),
+            Sub(o) => combine_add_sub(config, instructions, i, o, -1),
+            AddMul(o, n) => combine_add_sub(config, instructions, i, o, n as i16),
+            SubMul(o, n) => combine_add_sub(config, instructions, i, o, -(n as i16)),
+
+            Output => IndexInc::One,
+            Input => IndexInc::One,
+            JumpZ(_) => IndexInc::One,
+            JumpNz(_) => IndexInc::One,
+        };
+
+        i += index_inc as usize;
+    }
+}
+
+fn combine_shifts(
+    config: &Config,
+    instructions: &mut Vec<Instruction>,
+    start: usize,
+    mut shift: i16,
+) -> IndexInc {
+    use Instruction::*;
+
+    let mut i = start + 1;
+    while i < instructions.len() {
+        match instructions[i] {
+            Shl(n) => shift -= n as i16,
+            Shr(n) => shift += n as i16,
+            _ => break,
+        }
+
+        i += 1;
+    }
+
+    if start + 1 == i {
+        return IndexInc::One;
+    };
+
+    let range = start..i;
+    let replacement = match shift {
+        ..=-1 => Shl((-shift) as u16),
+        0 => {
+            if config.verbose >= 2 {
+                let removed = &instructions[range.clone()];
+                println!("remove redundant {range:?} {removed:?}");
+            }
+            instructions.drain(range);
+            return IndexInc::Zero;
+        }
+        1.. => Shl(shift as u16),
+    };
+    if config.verbose >= 2 {
+        let removed = &instructions[range.clone()];
+        println!("simplify {range:?} {removed:?} with {replacement:?}");
+    }
+    instructions.splice(range, Some(replacement));
+
+    IndexInc::One
+}
+
+enum SetField {
+    Diff(i16),
+    Zeroed(i16),
+}
+
+impl SetField {
+    fn diff(&mut self, diff: i16) {
+        match self {
+            SetField::Diff(n) => *n += diff,
+            SetField::Zeroed(n) => *n += diff,
+        }
+    }
+
+    fn set(&mut self, val: u8) {
+        *self = SetField::Zeroed(val as i16);
+    }
+}
+
+fn combine_sets(
+    config: &Config,
+    instructions: &mut Vec<Instruction>,
+    start: usize,
+    offset: i16,
+    mut acc: SetField,
+) -> IndexInc {
+    use Instruction::*;
+
+    let mut i = start + 1;
+    while i < instructions.len() {
+        match instructions[i] {
+            Inc(o, n) if offset == o => acc.diff(n as i16),
+            Dec(o, n) if offset == o => acc.diff(-(n as i16)),
+            Zero(o) if offset == o => acc.set(0),
+            Set(o, n) if offset == o => acc.set(n),
+            _ => break,
+        }
+
+        i += 1;
+    }
+
+    if start + 1 == i {
+        return IndexInc::One;
+    }
+
+    let range = start..i;
+    let replacement = match acc {
+        SetField::Diff(n) => match n {
+            ..=-1 => {
+                let val = n.rem_euclid(u8::MAX as i16) as u8;
+                Dec(offset, val)
+            }
+            0 => {
+                if config.verbose >= 2 {
+                    let removed = &instructions[range.clone()];
+                    println!("removed redundant {range:?} {removed:?}");
+                }
+                instructions.drain(range);
+                return IndexInc::Zero;
+            }
+            1.. => Inc(offset, n as u8),
+        },
+        SetField::Zeroed(0) => Zero(offset),
+        SetField::Zeroed(n) => {
+            let val = n.rem_euclid(u8::MAX as i16) as u8;
+            Set(offset, val)
+        }
+    };
+    if config.verbose >= 2 {
+        let removed = &instructions[range.clone()];
+        println!("simplify {range:?} {removed:?} with {replacement:?}");
+    }
+    instructions.splice(range, Some(replacement));
+
+    IndexInc::One
+}
+
+fn combine_add_sub(
+    config: &Config,
+    instructions: &mut Vec<Instruction>,
+    start: usize,
+    offset: i16,
+    mut factor: i16,
+) -> IndexInc {
+    use Instruction::*;
+
+    let mut i = start + 1;
+    while i < instructions.len() {
+        match instructions[i] {
+            Add(o) if offset == o => factor += 1,
+            Sub(o) if offset == o => factor -= 1,
+            AddMul(o, n) if offset == o => factor += n as i16,
+            SubMul(o, n) if offset == o => factor -= n as i16,
+
+            // if field is zeroed all instruction combined until here are redundant
+            Zero(o) | Set(o, _) if o == offset => {
+                let range = start..i + 1;
+                if config.verbose >= 2 {
+                    let removed = &instructions[range.clone()];
+                    println!("removed redundant {range:?} {removed:?}");
+                }
+                instructions.drain(range);
+                return IndexInc::Zero;
+            }
+            _ => break,
+        }
+
+        i += 1;
+    }
+    if start + 1 == i {
+        return IndexInc::One;
+    }
+
+    let range = start..i;
+    let replacement = match factor {
+        ..=-2 => SubMul(offset, -factor as u8),
+        ..=-1 => Sub(offset),
+        0 => {
+            if config.verbose >= 2 {
+                let removed = &instructions[range.clone()];
+                println!("remove redundant {range:?} {removed:?}");
+            }
+            instructions.drain(range);
+            return IndexInc::Zero;
+        }
+        1 => Add(offset),
+        2.. => AddMul(offset, factor as u8),
+    };
+    if config.verbose >= 2 {
+        let removed = &instructions[range.clone()];
+        println!("simplify {range:?} {removed:?} with {replacement:?}");
+    }
+    instructions.splice(range, Some(replacement));
+
+    IndexInc::One
 }

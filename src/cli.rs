@@ -18,6 +18,7 @@ pub struct Config {
     pub o_jumps: bool,
     pub o_dead_code: bool,
     pub o_init: bool,
+    pub o_simplify: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +70,7 @@ pub fn parse_args() -> ControlFlow<ExitCode, (Config, Command, PathBuf)> {
         o_jumps: true,
         o_dead_code: true,
         o_init: true,
+        o_simplify: true,
     };
     for a in args {
         if let Some(n) = a.strip_prefix("--") {
@@ -81,6 +83,7 @@ pub fn parse_args() -> ControlFlow<ExitCode, (Config, Command, PathBuf)> {
                 "no-optimize-jumps" => config.o_jumps = false,
                 "no-optimize-dead-code" => config.o_dead_code = false,
                 "no-optimize-init" => config.o_init = false,
+                "no-optimize-simplify" => config.o_simplify = false,
                 _ => input_error!("unexpected argument `{a}`"),
             }
         } else if let Some(n) = a.strip_prefix('-') {
@@ -127,6 +130,7 @@ brainfuck <mode> [<option>] <path>
        --no-optimize-jumps      disable redundant jump elmination
        --no-optimize-dead-code  disable dead code elmination
        --no-optimize-init       disable state initialization optimization
+       --no-optimize-simplify   disable code simplification
     "
     );
 }
