@@ -502,7 +502,7 @@ fn combine_shifts(
             instructions.drain(range);
             return IndexInc::Zero;
         }
-        1.. => Shl(shift as u16),
+        1.. => Shr(shift as u16),
     };
     if config.verbose >= 2 {
         let removed = &instructions[range.clone()];
