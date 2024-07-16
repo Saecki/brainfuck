@@ -22,4 +22,5 @@ options
        --no-optimize-jumps      disable redundant jump elmination
        --no-optimize-dead-code  disable dead code elmination
        --no-optimize-init       disable state initialization optimization
+       --no-optimize-simplify   disable code simplification
 ```
