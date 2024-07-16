@@ -31,45 +31,36 @@ pub fn replace_zeros(config: &Config, instructions: &mut Vec<Instruction>) {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum IterationDiff {
-    /// The change each loop iteration will have on the iteration register.
-    Diff(i16),
-    /// The loop always zeros the iteration register, this is equivalent to an if statement.
-    Zeroed,
-    /// The loop always zeros the iteration register, and then performs other operations on the
-    /// iteration register. If the zeroed diff results in 0, this is also equivalent to an if
-    /// statement, and the register is just used as temporary storage. Otherwise this is an
-    /// infinite loop.
-    ZeroedDiff(i16),
+enum Update {
+    /// A relative change to a register value.
+    /// Just [`Instruction::Inc`] and [`Instruction::Dec`].
+    Relative(i8),
+    /// An absolute change to a register value.
+    /// A [`Instruction::Zero`] or [`Instruction::Set`] and then optional
+    /// [`Instruction::Inc`] or [`Instruction::Dec`]
+    Absolute(i8),
 }
 
-impl IterationDiff {
+impl Update {
     fn inc(&mut self, inc: u8) {
-        use IterationDiff::*;
-        let inc = inc as i16;
+        use Update::*;
         match self {
-            Diff(d) | ZeroedDiff(d) => *d += inc,
-            Zeroed => *self = ZeroedDiff(inc),
+            Relative(d) => *d = d.wrapping_add(inc as i8),
+            Absolute(d) => *d = d.wrapping_add(inc as i8),
         }
     }
 
     fn dec(&mut self, dec: u8) {
-        use IterationDiff::*;
-        let dec = dec as i16;
+        use Update::*;
         match self {
-            Diff(d) | ZeroedDiff(d) => *d -= dec,
-            Zeroed => *self = ZeroedDiff(-dec),
+            Relative(d) => *d = d.wrapping_sub(dec as i8),
+            Absolute(d) => *d = d.wrapping_sub(dec as i8),
         }
     }
 
-    fn zero(&mut self) {
-        use IterationDiff::*;
-        *self = Zeroed;
-    }
-
     fn set(&mut self, n: u8) {
-        use IterationDiff::*;
-        *self = ZeroedDiff(n as i16);
+        use Update::*;
+        *self = Absolute(n as i8);
     }
 }
 
@@ -94,7 +85,7 @@ pub fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>
     let inner = &instructions[start..end];
     let mut offset = 0;
     let mut num_arith = 0;
-    let mut iteration_diff = IterationDiff::Diff(0);
+    let mut iteration_diff = Update::Relative(0);
     for inst in inner {
         match *inst {
             Shl(n) => offset -= n as i16,
@@ -115,7 +106,7 @@ pub fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>
             }
             Zero(o) => {
                 if offset + o == 0 {
-                    iteration_diff.zero();
+                    iteration_diff.set(0);
                 } else {
                     num_arith += 1;
                 }
@@ -138,8 +129,10 @@ pub fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>
     }
 
     match iteration_diff {
-        IterationDiff::Diff(-1) => (),
-        IterationDiff::Zeroed | IterationDiff::ZeroedDiff(0) => {
+        // The loop is decremented by 1 in each iteration
+        Update::Relative(-1) => (),
+        // The loop always zeros the iteration register
+        Update::Absolute(0) => {
             if config.o_jumps {
                 let JumpNz(jump) = &mut instructions[end] else {
                     unreachable!();
@@ -151,7 +144,9 @@ pub fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>
             }
             return;
         }
-        IterationDiff::Diff(0) | IterationDiff::ZeroedDiff(_) => {
+        // The loop doesn't alter the value inside the iteration register, or sets it to a constant
+        // non zero value
+        Update::Relative(0) | Update::Absolute(_) => {
             if !end_jump.is_redundant() {
                 let range = start - 1..end + 1;
                 let l = &instructions[range.clone()];
@@ -159,7 +154,10 @@ pub fn arithmetic_loop_pass(config: &Config, instructions: &mut Vec<Instruction>
             }
             return;
         }
-        IterationDiff::Diff(_) => return,
+        // An relative increment other than -1, the loop might never complete depending on how the
+        // iteration register was initialized
+        // TODO: handle +1 case
+        Update::Relative(_) => return,
     }
 
     if !config.o_arithmetic {
@@ -448,15 +446,21 @@ pub fn simplify_code(config: &Config, instructions: &mut Vec<Instruction>) {
             Shl(n) => combine_shifts(config, instructions, i, -(n as i16)),
             Shr(n) => combine_shifts(config, instructions, i, n as i16),
 
-            Inc(o, n) => combine_sets(config, instructions, i, o, SetField::Diff(n as i16)),
-            Dec(o, n) => combine_sets(config, instructions, i, o, SetField::Diff(-(n as i16))),
-            Zero(o) => combine_sets(config, instructions, i, o, SetField::Zeroed(o)),
-            Set(o, n) => combine_sets(config, instructions, i, o, SetField::Zeroed(n as i16)),
+            Inc(o, n) => combine_sets(config, instructions, i, o, Update::Relative(n as i8)),
+            Dec(o, n) => combine_sets(
+                config,
+                instructions,
+                i,
+                o,
+                Update::Relative((n as i8).wrapping_neg()),
+            ),
+            Zero(o) => combine_sets(config, instructions, i, o, Update::Absolute(0)),
+            Set(o, n) => combine_sets(config, instructions, i, o, Update::Absolute(n as i8)),
 
             Add(o) => combine_add_sub(config, instructions, i, o, 1),
             Sub(o) => combine_add_sub(config, instructions, i, o, -1),
-            AddMul(o, n) => combine_add_sub(config, instructions, i, o, n as i16),
-            SubMul(o, n) => combine_add_sub(config, instructions, i, o, -(n as i16)),
+            AddMul(o, n) => combine_add_sub(config, instructions, i, o, n as i8),
+            SubMul(o, n) => combine_add_sub(config, instructions, i, o, (n as i8).wrapping_neg()),
 
             Output => IndexInc::One,
             Input => IndexInc::One,
@@ -513,38 +517,20 @@ fn combine_shifts(
     IndexInc::One
 }
 
-enum SetField {
-    Diff(i16),
-    Zeroed(i16),
-}
-
-impl SetField {
-    fn diff(&mut self, diff: i16) {
-        match self {
-            SetField::Diff(n) => *n += diff,
-            SetField::Zeroed(n) => *n += diff,
-        }
-    }
-
-    fn set(&mut self, val: u8) {
-        *self = SetField::Zeroed(val as i16);
-    }
-}
-
 fn combine_sets(
     config: &Config,
     instructions: &mut Vec<Instruction>,
     start: usize,
     offset: i16,
-    mut acc: SetField,
+    mut acc: Update,
 ) -> IndexInc {
     use Instruction::*;
 
     let mut i = start + 1;
     while i < instructions.len() {
         match instructions[i] {
-            Inc(o, n) if offset == o => acc.diff(n as i16),
-            Dec(o, n) if offset == o => acc.diff(-(n as i16)),
+            Inc(o, n) if offset == o => acc.inc(n),
+            Dec(o, n) if offset == o => acc.dec(n),
             Zero(o) if offset == o => acc.set(0),
             Set(o, n) if offset == o => acc.set(n),
             _ => break,
@@ -559,11 +545,8 @@ fn combine_sets(
 
     let range = start..i;
     let replacement = match acc {
-        SetField::Diff(n) => match n {
-            ..=-1 => {
-                let val = n.rem_euclid(u8::MAX as i16) as u8;
-                Dec(offset, val)
-            }
+        Update::Relative(n) => match n {
+            ..=-1 => Dec(offset, n.wrapping_neg() as u8),
             0 => {
                 if config.verbose >= 2 {
                     let removed = &instructions[range.clone()];
@@ -574,11 +557,8 @@ fn combine_sets(
             }
             1.. => Inc(offset, n as u8),
         },
-        SetField::Zeroed(0) => Zero(offset),
-        SetField::Zeroed(n) => {
-            let val = n.rem_euclid(u8::MAX as i16) as u8;
-            Set(offset, val)
-        }
+        Update::Absolute(0) => Zero(offset),
+        Update::Absolute(n) => Set(offset, n as u8),
     };
     if config.verbose >= 2 {
         let removed = &instructions[range.clone()];
@@ -594,17 +574,17 @@ fn combine_add_sub(
     instructions: &mut Vec<Instruction>,
     start: usize,
     offset: i16,
-    mut factor: i16,
+    mut factor: i8,
 ) -> IndexInc {
     use Instruction::*;
 
     let mut i = start + 1;
     while i < instructions.len() {
         match instructions[i] {
-            Add(o) if offset == o => factor += 1,
-            Sub(o) if offset == o => factor -= 1,
-            AddMul(o, n) if offset == o => factor += n as i16,
-            SubMul(o, n) if offset == o => factor -= n as i16,
+            Add(o) if offset == o => factor = factor.wrapping_add(1),
+            Sub(o) if offset == o => factor = factor.wrapping_sub(1),
+            AddMul(o, n) if offset == o => factor = factor.wrapping_add(n as i8),
+            SubMul(o, n) if offset == o => factor = factor.wrapping_sub(n as i8),
 
             // if field is zeroed all instruction combined until here are redundant
             Zero(o) | Set(o, _) if o == offset => {
